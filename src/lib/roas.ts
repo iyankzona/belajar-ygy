@@ -26,6 +26,35 @@ export type AnalyzedRow = {
   recommendedSpend: number
 }
 
+// A consolidated, one-row-per-campaign summary based on the latest period
+// and the full historical record for that campaign.
+export type ConsolidatedRow = {
+  campaign: string
+  // latest period data
+  latestPeriod: string
+  latestSpend: number
+  latestRevenue: number
+  latestRoas: number | null
+  // historical averages (all periods BEFORE the latest)
+  historicalPeriods: number
+  historicalAvgSpend: number | null
+  historicalAvgRevenue: number | null
+  historicalAvgRoas: number | null
+  // trend: latest vs historical average
+  spendTrend: number | null   // % change vs historical avg
+  rroasTrend: number | null   // absolute change in ROAS vs historical avg
+  // incremental metrics (latest vs immediately previous period)
+  incrementalSpend: number | null
+  incrementalRevenue: number | null
+  incrementalRoas: number | null
+  // recommendation
+  category: Category
+  reason: string
+  recommendation: string
+  recommendedSpend: number
+  confidence: 'High' | 'Medium' | 'Low'
+}
+
 export const CATEGORY_COLORS: Record<Category, string> = {
   Scale: '#16a34a',
   Maintain: '#2563eb',
@@ -51,6 +80,11 @@ export const formatRoas = (value: number | null | undefined) =>
   value === null || value === undefined || !Number.isFinite(value)
     ? 'N/A'
     : value.toFixed(2)
+
+export const formatPct = (value: number | null | undefined) =>
+  value === null || value === undefined || !Number.isFinite(value)
+    ? 'N/A'
+    : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
 
 const parseNumber = (value: string | undefined) =>
   Number(String(value ?? '').replace(/[^0-9.-]/g, '')) || 0
@@ -113,10 +147,51 @@ export function loadRows(text: string, mode: ViewMode): RawRow[] {
     .filter((row) => row.period && row.campaign)
 }
 
-function periodTime(period: string, mode: ViewMode): number {
+export function periodTime(period: string, mode: ViewMode): number {
   if (mode === 'monthly')
     return Date.parse(period.length === 7 ? `${period}-01` : period) || 0
   return Date.parse(period.replace(/ - .*/, '')) || Date.parse(period) || 0
+}
+
+// Categorize a campaign given incremental ROAS, current ROAS, previous ROAS,
+// minimum spend, and target iROAS.
+function categorize(opts: {
+  incrementalRoas: number | null
+  currentRoas: number | null
+  previousRoas: number | null
+  currentSpend: number
+  minimumSpend: number
+  targetIncrementalRoas: number
+  hasHistory: boolean
+}): { category: Category; reason: string } {
+  const { incrementalRoas, currentRoas, previousRoas, currentSpend, minimumSpend, targetIncrementalRoas, hasHistory } = opts
+
+  if (!hasHistory) {
+    return { category: 'Monitor', reason: 'Only one period of data — no historical basis for comparison yet.' }
+  }
+  if (currentSpend < minimumSpend) {
+    return { category: 'Monitor', reason: 'Spend is below the minimum threshold — insufficient volume for reliable signal.' }
+  }
+  if (incrementalRoas === null) {
+    return { category: 'Monitor', reason: 'No incremental spend observed — unable to compute incremental ROAS.' }
+  }
+  if (incrementalRoas <= 0) {
+    return { category: 'Reduce', reason: 'Incremental ROAS is zero or negative — additional spend is generating no returns.' }
+  }
+  if (incrementalRoas >= targetIncrementalRoas * 1.05) {
+    return { category: 'Scale', reason: 'Incremental ROAS comfortably exceeds target — campaign has strong marginal returns.' }
+  }
+  if (incrementalRoas >= targetIncrementalRoas * 0.85) {
+    return { category: 'Maintain', reason: 'Incremental ROAS is close to target — campaign is performing at an efficient level.' }
+  }
+  if (
+    currentRoas !== null &&
+    previousRoas !== null &&
+    Math.abs(currentRoas - previousRoas) <= targetIncrementalRoas * 0.1
+  ) {
+    return { category: 'Maintain', reason: 'ROAS is stable period-over-period even though incremental ROAS is slightly below target.' }
+  }
+  return { category: 'Reduce', reason: 'Incremental ROAS is materially below target — efficiency is declining with more spend.' }
 }
 
 export function analyzeRows(
@@ -142,9 +217,7 @@ export function analyzeRows(
       const previous = campaignRows[index - 1]
       const currentRoas = row.cost === 0 ? null : row.revenue / row.cost
       const previousRoas = previous
-        ? previous.cost === 0
-          ? null
-          : previous.revenue / previous.cost
+        ? previous.cost === 0 ? null : previous.revenue / previous.cost
         : null
       const incrementalSpend = previous ? row.cost - previous.cost : null
       const incrementalRevenue = previous ? row.revenue - previous.revenue : null
@@ -153,34 +226,15 @@ export function analyzeRows(
           ? (incrementalRevenue ?? 0) / incrementalSpend
           : null
 
-      let category: Category = 'Monitor'
-      let reason = 'First period or missing previous period data.'
-
-      if (previous) {
-        if ((incrementalSpend ?? 0) <= 0) {
-          category = 'Monitor'
-          reason = incrementalSpend === 0 ? 'No additional spend.' : 'Spend Reduced'
-        } else if (row.cost < minimumSpend) {
-          category = 'Monitor'
-          reason = 'Below minimum spend threshold.'
-        } else if ((incrementalRevenue ?? 0) <= 0) {
-          category = 'Reduce'
-          reason = 'Underperforming: revenue was flat or negative despite higher spend.'
-        } else if ((incrementalRoas ?? 0) >= targetIncrementalRoas * 1.05) {
-          category = 'Scale'
-          reason = 'Incremental ROAS is above target.'
-        } else if (
-          (incrementalRoas ?? 0) >= targetIncrementalRoas * 0.85 ||
-          Math.abs((currentRoas ?? 0) - (previousRoas ?? 0)) <=
-            targetIncrementalRoas * 0.1
-        ) {
-          category = 'Maintain'
-          reason = 'Incremental ROAS is close to target or current ROAS is stable.'
-        } else {
-          category = 'Reduce'
-          reason = 'Incremental ROAS is below target.'
-        }
-      }
+      const { category, reason } = categorize({
+        incrementalRoas,
+        currentRoas,
+        previousRoas,
+        currentSpend: row.cost,
+        minimumSpend,
+        targetIncrementalRoas,
+        hasHistory: index > 0,
+      })
 
       const multiplier =
         category === 'Scale'
@@ -224,6 +278,132 @@ export function analyzeRows(
   )
 }
 
+// ─── Consolidated recommendations ────────────────────────────────────────────
+// Produces one row per campaign based on the latest period and ALL historical
+// periods as context.
+
+export function consolidateRows(
+  rows: RawRow[],
+  mode: ViewMode,
+  targetIncrementalRoas: number,
+  minimumSpend: number,
+  reallocationPercentage: number,
+): ConsolidatedRow[] {
+  const grouped = new Map<string, RawRow[]>()
+  rows.forEach((row) =>
+    grouped.set(row.campaign, [...(grouped.get(row.campaign) || []), row]),
+  )
+
+  const results: ConsolidatedRow[] = []
+
+  grouped.forEach((campaignRows, campaign) => {
+    campaignRows.sort(
+      (a, b) => periodTime(a.period, mode) - periodTime(b.period, mode),
+    )
+
+    const latest = campaignRows[campaignRows.length - 1]
+    const previous = campaignRows.length > 1 ? campaignRows[campaignRows.length - 2] : null
+    const historicalRows = campaignRows.slice(0, -1) // all except latest
+
+    // Latest period metrics
+    const latestRoas = latest.cost === 0 ? null : latest.revenue / latest.cost
+    const prevRoas = previous ? (previous.cost === 0 ? null : previous.revenue / previous.cost) : null
+
+    // Incremental: latest vs immediately previous period
+    const incrementalSpend = previous ? latest.cost - previous.cost : null
+    const incrementalRevenue = previous ? latest.revenue - previous.revenue : null
+    const incrementalRoas =
+      incrementalSpend !== null && incrementalSpend > 0
+        ? (incrementalRevenue ?? 0) / incrementalSpend
+        : null
+
+    // Historical averages (all periods before latest)
+    let historicalAvgSpend: number | null = null
+    let historicalAvgRevenue: number | null = null
+    let historicalAvgRoas: number | null = null
+
+    if (historicalRows.length > 0) {
+      historicalAvgSpend = historicalRows.reduce((s, r) => s + r.cost, 0) / historicalRows.length
+      historicalAvgRevenue = historicalRows.reduce((s, r) => s + r.revenue, 0) / historicalRows.length
+      const roasValues = historicalRows
+        .filter((r) => r.cost > 0)
+        .map((r) => r.revenue / r.cost)
+      historicalAvgRoas = roasValues.length > 0
+        ? roasValues.reduce((s, v) => s + v, 0) / roasValues.length
+        : null
+    }
+
+    // Trend: latest vs historical average
+    const spendTrend =
+      historicalAvgSpend !== null && historicalAvgSpend > 0
+        ? ((latest.cost - historicalAvgSpend) / historicalAvgSpend) * 100
+        : null
+    const rroasTrend =
+      latestRoas !== null && historicalAvgRoas !== null
+        ? latestRoas - historicalAvgRoas
+        : null
+
+    // Confidence: based on how many historical periods exist
+    const confidence: 'High' | 'Medium' | 'Low' =
+      historicalRows.length >= 4 ? 'High' : historicalRows.length >= 2 ? 'Medium' : 'Low'
+
+    const { category, reason } = categorize({
+      incrementalRoas,
+      currentRoas: latestRoas,
+      previousRoas: prevRoas,
+      currentSpend: latest.cost,
+      minimumSpend,
+      targetIncrementalRoas,
+      hasHistory: historicalRows.length > 0,
+    })
+
+    const multiplier =
+      category === 'Scale'
+        ? 1 + reallocationPercentage / 100
+        : category === 'Reduce'
+          ? 1 - reallocationPercentage / 100
+          : 1
+    const recommendedSpend = latest.cost * multiplier
+
+    results.push({
+      campaign,
+      latestPeriod: latest.period,
+      latestSpend: latest.cost,
+      latestRevenue: latest.revenue,
+      latestRoas,
+      historicalPeriods: historicalRows.length,
+      historicalAvgSpend,
+      historicalAvgRevenue,
+      historicalAvgRoas,
+      spendTrend,
+      rroasTrend,
+      incrementalSpend,
+      incrementalRevenue,
+      incrementalRoas,
+      category,
+      reason,
+      recommendedSpend,
+      recommendation:
+        category === 'Scale'
+          ? `Increase budget by ${reallocationPercentage}% to ${formatCurrency(recommendedSpend)}`
+          : category === 'Reduce'
+            ? `Decrease budget by ${reallocationPercentage}% to ${formatCurrency(recommendedSpend)}`
+            : category === 'Maintain'
+              ? 'Keep budget unchanged'
+              : 'Gather more data before acting',
+      confidence,
+    })
+  })
+
+  // Sort: Scale first, then Maintain, Reduce, Monitor; then alphabetically
+  const order: Category[] = ['Scale', 'Maintain', 'Reduce', 'Monitor']
+  return results.sort(
+    (a, b) =>
+      order.indexOf(a.category) - order.indexOf(b.category) ||
+      a.campaign.localeCompare(b.campaign),
+  )
+}
+
 export function computeMetrics(analyzedRows: AnalyzedRow[]) {
   const totalSpend = analyzedRows.reduce((s, r) => s + r.currentSpend, 0)
   const totalRevenue = analyzedRows.reduce((s, r) => s + r.currentRevenue, 0)
@@ -240,6 +420,28 @@ export function computeMetrics(analyzedRows: AnalyzedRow[]) {
   analyzedRows.forEach((r) => {
     counts[r.category] += 1
   })
+  return {
+    totalSpend,
+    totalRevenue,
+    averageRoas: totalSpend ? totalRevenue / totalSpend : null,
+    totalIncrementalSpend,
+    totalIncrementalRevenue,
+    overallIncrementalRoas: totalIncrementalSpend
+      ? totalIncrementalRevenue / totalIncrementalSpend
+      : null,
+    counts,
+  }
+}
+
+// Compute consolidated-level metrics (from the latest period per campaign)
+export function computeConsolidatedMetrics(rows: ConsolidatedRow[]) {
+  const totalSpend = rows.reduce((s, r) => s + r.latestSpend, 0)
+  const totalRevenue = rows.reduce((s, r) => s + r.latestRevenue, 0)
+  const incrementalRows = rows.filter((r) => (r.incrementalSpend ?? 0) > 0)
+  const totalIncrementalSpend = incrementalRows.reduce((s, r) => s + (r.incrementalSpend ?? 0), 0)
+  const totalIncrementalRevenue = incrementalRows.reduce((s, r) => s + (r.incrementalRevenue ?? 0), 0)
+  const counts = { Scale: 0, Maintain: 0, Reduce: 0, Monitor: 0 } as Record<Category, number>
+  rows.forEach((r) => { counts[r.category] += 1 })
   return {
     totalSpend,
     totalRevenue,

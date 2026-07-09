@@ -56,9 +56,9 @@ export function AnalysisTable({ rows, view }: Props) {
   }, {} as Record<Category, number>)
 
   return (
-    <div className="bg-surface border border-border rounded-xl shadow-sm overflow-hidden">
+    <div className="overflow-hidden">
       {/* Table header bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4 border-b border-border">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-5 py-4 border-b border-border bg-surface">
         <p className="text-sm font-semibold text-text">
           {view === 'weekly' ? 'Weekly' : 'Monthly'} campaign analysis
           <span className="ml-2 text-xs font-normal text-muted">{filtered.length} rows</span>

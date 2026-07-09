@@ -20,7 +20,9 @@ import {
 import {
   analyzeRows,
   CATEGORY_COLORS,
+  computeConsolidatedMetrics,
   computeMetrics,
+  consolidateRows,
   formatCurrency,
   formatRoas,
   loadRows,
@@ -30,6 +32,7 @@ import {
 } from '@/lib/roas'
 import { AnalysisTable } from '@/components/AnalysisTable'
 import { BudgetSummary } from '@/components/BudgetSummary'
+import { RecommendationPanel } from '@/components/RecommendationPanel'
 
 // ─── Small reusable pieces ────────────────────────────────────────────────────
 
@@ -152,6 +155,7 @@ export function Analyzer() {
   const [targetIncrementalRoas, setTargetIncrementalRoas] = useState(5)
   const [minimumSpend, setMinimumSpend] = useState(0)
   const [reallocationPercentage, setReallocationPercentage] = useState(15)
+  const [showHistorical, setShowHistorical] = useState(false)
 
   const sourceRows = view === 'weekly' ? weeklyRows : monthlyRows
   const hasData = sourceRows.length > 0
@@ -162,7 +166,12 @@ export function Analyzer() {
     [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage],
   )
 
-  const metrics = useMemo(() => computeMetrics(analyzedRows), [analyzedRows])
+  const consolidatedRows = useMemo(
+    () => consolidateRows(sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage),
+    [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage],
+  )
+
+  const metrics = useMemo(() => computeConsolidatedMetrics(consolidatedRows), [consolidatedRows])
 
   const trendData = Object.values(
     analyzedRows.reduce<Record<string, { period: string; spend: number; revenue: number }>>(
@@ -409,6 +418,13 @@ export function Analyzer() {
                 </div>
               </Card>
 
+              {/* Consolidated recommendations */}
+              <RecommendationPanel
+                rows={consolidatedRows}
+                view={view}
+                targetIncrementalRoas={targetIncrementalRoas}
+              />
+
               {/* Budget summary */}
               <BudgetSummary analyzedRows={analyzedRows} />
 
@@ -481,8 +497,35 @@ export function Analyzer() {
                 </ChartCard>
               </div>
 
-              {/* Data table */}
-              <AnalysisTable rows={analyzedRows} view={view} />
+              {/* Historical data table (collapsible) */}
+              <div className="bg-surface border border-border rounded-xl shadow-sm overflow-hidden">
+                <button
+                  onClick={() => setShowHistorical((v) => !v)}
+                  className="w-full flex items-center justify-between px-5 py-4 text-left cursor-pointer hover:bg-surface-2 transition-colors"
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-text">Full Historical Data</p>
+                    <p className="text-xs text-muted mt-0.5">
+                      All {analyzedRows.length} rows across every period — used as the basis for recommendations above
+                    </p>
+                  </div>
+                  <svg
+                    className={`w-4 h-4 text-muted shrink-0 transition-transform ${showHistorical ? 'rotate-180' : ''}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    aria-hidden="true"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                {showHistorical && (
+                  <div className="border-t border-border">
+                    <AnalysisTable rows={analyzedRows} view={view} />
+                  </div>
+                )}
+              </div>
 
             </div>
           )}
