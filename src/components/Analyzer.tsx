@@ -25,7 +25,9 @@ import {
   consolidateRows,
   formatCurrency,
   formatRoas,
+  getAvailablePeriods,
   loadRows,
+  periodTime,
   type Category,
   type RawRow,
   type ViewMode,
@@ -156,19 +158,38 @@ export function Analyzer() {
   const [minimumSpend, setMinimumSpend] = useState(0)
   const [reallocationPercentage, setReallocationPercentage] = useState(15)
   const [showHistorical, setShowHistorical] = useState(false)
+  const [selectedWeeklyPeriod, setSelectedWeeklyPeriod] = useState<string | null>(null)
+  const [selectedMonthlyPeriod, setSelectedMonthlyPeriod] = useState<string | null>(null)
 
   const sourceRows = view === 'weekly' ? weeklyRows : monthlyRows
   const hasData = sourceRows.length > 0
   const hasAnyData = weeklyRows.length > 0 || monthlyRows.length > 0
 
+  const availablePeriods = useMemo(
+    () => getAvailablePeriods(sourceRows, view),
+    [sourceRows, view],
+  )
+
+  // Active selected period — fall back to latest if none selected
+  const selectedPeriod = useMemo(() => {
+    const chosen = view === 'weekly' ? selectedWeeklyPeriod : selectedMonthlyPeriod
+    if (chosen && availablePeriods.includes(chosen)) return chosen
+    return availablePeriods[availablePeriods.length - 1] ?? null
+  }, [view, selectedWeeklyPeriod, selectedMonthlyPeriod, availablePeriods])
+
+  const setSelectedPeriod = (p: string) => {
+    if (view === 'weekly') setSelectedWeeklyPeriod(p)
+    else setSelectedMonthlyPeriod(p)
+  }
+
   const analyzedRows = useMemo(
-    () => analyzeRows(sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage),
-    [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage],
+    () => analyzeRows(sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod ?? undefined),
+    [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod],
   )
 
   const consolidatedRows = useMemo(
-    () => consolidateRows(sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage),
-    [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage],
+    () => consolidateRows(sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod ?? undefined),
+    [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod],
   )
 
   const metrics = useMemo(() => computeConsolidatedMetrics(consolidatedRows), [consolidatedRows])
@@ -328,6 +349,54 @@ export function Analyzer() {
               </span>
               <h2 className="text-sm font-semibold text-text-light uppercase tracking-widest">Results</h2>
             </div>
+            <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* Period selector */}
+            {hasData && availablePeriods.length > 1 && (
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-medium text-muted whitespace-nowrap">
+                  {view === 'weekly' ? 'Week' : 'Month'}:
+                </label>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => {
+                      const idx = availablePeriods.indexOf(selectedPeriod ?? '')
+                      if (idx > 0) setSelectedPeriod(availablePeriods[idx - 1])
+                    }}
+                    disabled={availablePeriods.indexOf(selectedPeriod ?? '') <= 0}
+                    className="w-6 h-6 flex items-center justify-center rounded border border-border bg-surface text-muted hover:text-text hover:border-primary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    aria-label="Previous period"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+                    </svg>
+                  </button>
+                  <select
+                    value={selectedPeriod ?? ''}
+                    onChange={(e) => setSelectedPeriod(e.target.value)}
+                    className="rounded-lg border border-border bg-surface px-2 py-1 text-xs font-medium text-text focus:outline-none focus:ring-2 focus:ring-primary transition max-w-[180px]"
+                  >
+                    {availablePeriods.map((p, i) => (
+                      <option key={p} value={p}>
+                        {p}{i === availablePeriods.length - 1 ? ' (latest)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      const idx = availablePeriods.indexOf(selectedPeriod ?? '')
+                      if (idx < availablePeriods.length - 1) setSelectedPeriod(availablePeriods[idx + 1])
+                    }}
+                    disabled={availablePeriods.indexOf(selectedPeriod ?? '') >= availablePeriods.length - 1}
+                    className="w-6 h-6 flex items-center justify-center rounded border border-border bg-surface text-muted hover:text-text hover:border-primary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    aria-label="Next period"
+                  >
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            )}
             {/* View tabs */}
             <div className="flex items-center gap-1 bg-surface border border-border rounded-lg p-1">
               {(['weekly', 'monthly'] as ViewMode[]).map((tab) => (
@@ -344,6 +413,7 @@ export function Analyzer() {
                 </button>
               ))}
             </div>
+          </div>
           </div>
 
           {!hasData ? (
@@ -423,6 +493,8 @@ export function Analyzer() {
                 rows={consolidatedRows}
                 view={view}
                 targetIncrementalRoas={targetIncrementalRoas}
+                selectedPeriod={selectedPeriod}
+                totalPeriods={availablePeriods.length}
               />
 
               {/* Budget summary */}

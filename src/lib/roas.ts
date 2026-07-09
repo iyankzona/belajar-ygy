@@ -153,6 +153,12 @@ export function periodTime(period: string, mode: ViewMode): number {
   return Date.parse(period.replace(/ - .*/, '')) || Date.parse(period) || 0
 }
 
+/** Returns all unique periods from the raw rows, sorted chronologically. */
+export function getAvailablePeriods(rows: RawRow[], mode: ViewMode): string[] {
+  const set = new Set(rows.map((r) => r.period))
+  return Array.from(set).sort((a, b) => periodTime(a, mode) - periodTime(b, mode))
+}
+
 // Categorize a campaign given incremental ROAS, current ROAS, previous ROAS,
 // minimum spend, and target iROAS.
 function categorize(opts: {
@@ -200,9 +206,14 @@ export function analyzeRows(
   targetIncrementalRoas: number,
   minimumSpend: number,
   reallocationPercentage: number,
+  selectedPeriod?: string,
 ): AnalyzedRow[] {
+  // When a period is selected, limit rows to that period and all prior periods
+  const cutoff = selectedPeriod ? periodTime(selectedPeriod, mode) : Infinity
+  const filteredRows = rows.filter((r) => periodTime(r.period, mode) <= cutoff)
+
   const grouped = new Map<string, RawRow[]>()
-  rows.forEach((row) =>
+  filteredRows.forEach((row) =>
     grouped.set(row.campaign, [...(grouped.get(row.campaign) || []), row]),
   )
 
@@ -288,9 +299,14 @@ export function consolidateRows(
   targetIncrementalRoas: number,
   minimumSpend: number,
   reallocationPercentage: number,
+  selectedPeriod?: string,
 ): ConsolidatedRow[] {
+  // Limit to rows up to and including the selected period
+  const cutoff = selectedPeriod ? periodTime(selectedPeriod, mode) : Infinity
+  const filteredRows = rows.filter((r) => periodTime(r.period, mode) <= cutoff)
+
   const grouped = new Map<string, RawRow[]>()
-  rows.forEach((row) =>
+  filteredRows.forEach((row) =>
     grouped.set(row.campaign, [...(grouped.get(row.campaign) || []), row]),
   )
 
@@ -301,9 +317,15 @@ export function consolidateRows(
       (a, b) => periodTime(a.period, mode) - periodTime(b.period, mode),
     )
 
-    const latest = campaignRows[campaignRows.length - 1]
-    const previous = campaignRows.length > 1 ? campaignRows[campaignRows.length - 2] : null
-    const historicalRows = campaignRows.slice(0, -1) // all except latest
+    // The "current" period is either the selected one (if the campaign has data for it)
+    // or the campaign's most recent period within the cutoff
+    const latestIdx = selectedPeriod
+      ? campaignRows.findLastIndex((r) => r.period === selectedPeriod)
+      : -1
+    const currentIdx = latestIdx !== -1 ? latestIdx : campaignRows.length - 1
+    const latest = campaignRows[currentIdx]
+    const previous = currentIdx > 0 ? campaignRows[currentIdx - 1] : null
+    const historicalRows = campaignRows.slice(0, currentIdx) // all before current
 
     // Latest period metrics
     const latestRoas = latest.cost === 0 ? null : latest.revenue / latest.cost

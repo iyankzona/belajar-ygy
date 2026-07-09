@@ -13,6 +13,8 @@ type Props = {
   rows: ConsolidatedRow[]
   view: ViewMode
   targetIncrementalRoas: number
+  selectedPeriod: string | null
+  totalPeriods: number
 }
 
 const CATEGORY_BG: Record<Category, string> = {
@@ -59,7 +61,7 @@ function TrendBadge({ value, suffix = '' }: { value: number | null; suffix?: str
   )
 }
 
-export function RecommendationPanel({ rows, view, targetIncrementalRoas }: Props) {
+export function RecommendationPanel({ rows, view, targetIncrementalRoas, selectedPeriod, totalPeriods }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [filter, setFilter] = useState<'All' | Category>('All')
 
@@ -87,12 +89,19 @@ export function RecommendationPanel({ rows, view, targetIncrementalRoas }: Props
         <div>
           <p className="text-sm font-semibold text-text">
             Consolidated Recommendations
-            <span className="ml-2 text-xs font-normal text-muted">
-              Latest {periodLabel} vs. past {periodLabel}s
-            </span>
           </p>
           <p className="text-xs text-muted mt-0.5">
-            One recommendation per campaign, based on the most recent {periodLabel} with full historical context.
+            {selectedPeriod
+              ? <>
+                  Showing <span className="font-semibold text-text">{selectedPeriod}</span>
+                  {' '}as current {periodLabel}, using{' '}
+                  {totalPeriods > 1
+                    ? <>{totalPeriods - 1} prior {periodLabel}{totalPeriods - 1 !== 1 ? 's' : ''} as historical basis</>
+                    : <>no prior {periodLabel}s — first period in dataset</>
+                  }
+                </>
+              : <>One recommendation per campaign based on full historical context.</>
+            }
           </p>
         </div>
         {/* Filter pills */}
