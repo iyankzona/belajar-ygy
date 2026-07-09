@@ -47,6 +47,11 @@ export type ConsolidatedRow = {
   incrementalSpend: number | null
   incrementalRevenue: number | null
   incrementalRoas: number | null
+  // daily spend breakdown
+  daysInPeriod: number          // 7 for weekly, days-in-month for monthly
+  avgDailySpend: number         // latestSpend / daysInPeriod
+  recommendedDailySpend: number // recommendedSpend / daysInPeriod
+  dailySpendDelta: number       // recommendedDailySpend - avgDailySpend
   // recommendation
   category: Category
   reason: string
@@ -151,6 +156,19 @@ export function periodTime(period: string, mode: ViewMode): number {
   if (mode === 'monthly')
     return Date.parse(period.length === 7 ? `${period}-01` : period) || 0
   return Date.parse(period.replace(/ - .*/, '')) || Date.parse(period) || 0
+}
+
+/**
+ * Returns the number of days in the given period string.
+ * Weekly periods are always 7. Monthly periods are the actual days in that month.
+ */
+export function getDaysInPeriod(period: string, mode: ViewMode): number {
+  if (mode === 'weekly') return 7
+  // period format: "YYYY-MM" or "Jan 2025" or similar
+  const ts = periodTime(period, mode)
+  if (!ts) return 30
+  const d = new Date(ts)
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
 }
 
 /** Returns all unique periods from the raw rows, sorted chronologically. */
@@ -387,6 +405,11 @@ export function consolidateRows(
           : 1
     const recommendedSpend = latest.cost * multiplier
 
+    const daysInPeriod = getDaysInPeriod(latest.period, mode)
+    const avgDailySpend = latest.cost / daysInPeriod
+    const recommendedDailySpend = recommendedSpend / daysInPeriod
+    const dailySpendDelta = recommendedDailySpend - avgDailySpend
+
     results.push({
       campaign,
       latestPeriod: latest.period,
@@ -402,6 +425,10 @@ export function consolidateRows(
       incrementalSpend,
       incrementalRevenue,
       incrementalRoas,
+      daysInPeriod,
+      avgDailySpend,
+      recommendedDailySpend,
+      dailySpendDelta,
       category,
       reason,
       recommendedSpend,

@@ -9,6 +9,27 @@ import {
   formatRoas,
 } from '@/lib/roas'
 
+function ColTooltip({ text }: { text: string }) {
+  const [show, setShow] = useState(false)
+  return (
+    <span
+      className="relative inline-flex items-center"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      <svg className="w-3 h-3 text-muted ml-1 cursor-help" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z" clipRule="evenodd" />
+      </svg>
+      {show && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-52 rounded-lg bg-text text-surface text-xs leading-relaxed p-3 shadow-lg pointer-events-none whitespace-normal text-center">
+          {text}
+          <div className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-text" />
+        </div>
+      )}
+    </span>
+  )
+}
+
 type Props = {
   rows: ConsolidatedRow[]
   view: ViewMode
@@ -133,13 +154,35 @@ export function RecommendationPanel({ rows, view, targetIncrementalRoas, selecte
           <thead className="bg-surface-2 border-b border-border">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wide">Campaign</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wide">Latest {periodLabel === 'week' ? 'Week' : 'Month'}</th>
-              <th className="px-4 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wide">Latest Spend</th>
-              <th className="px-4 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wide">Latest ROAS</th>
-              <th className="px-4 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wide">Incr. ROAS</th>
-              <th className="px-4 py-3 text-center text-xs font-semibold text-muted uppercase tracking-wide">vs History</th>
-              <th className="px-4 py-3 text-center text-xs font-semibold text-muted uppercase tracking-wide">Confidence</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wide">Action</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wide">Period</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wide">
+                Total Spend
+                <ColTooltip text="Total spend for this campaign in the selected period." />
+              </th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wide">
+                Avg Daily Spend
+                <ColTooltip text={`Total spend ÷ days in period. Set this as your daily budget in Google Ads.`} />
+              </th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wide">
+                ROAS
+                <ColTooltip text="Return On Ad Spend for this period: Revenue ÷ Spend." />
+              </th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-muted uppercase tracking-wide">
+                iROAS
+                <ColTooltip text="Incremental ROAS: measures the return on the extra spend vs the prior period. The key signal for scale vs reduce decisions." />
+              </th>
+              <th className="px-4 py-3 text-center text-xs font-semibold text-muted uppercase tracking-wide">
+                History
+                <ColTooltip text="Number of prior periods used as the historical baseline for this recommendation." />
+              </th>
+              <th className="px-4 py-3 text-center text-xs font-semibold text-muted uppercase tracking-wide">
+                Confidence
+                <ColTooltip text="High = 4+ prior periods. Medium = 2–3 periods. Low = 0–1 periods. More history = more reliable recommendation." />
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-muted uppercase tracking-wide">
+                Action
+                <ColTooltip text="The recommended budget adjustment based on iROAS vs your target. Expand the row to see exact daily spend targets." />
+              </th>
               <th className="px-4 py-3 w-8"></th>
             </tr>
           </thead>
@@ -173,10 +216,16 @@ export function RecommendationPanel({ rows, view, targetIncrementalRoas, selecte
                       {row.latestPeriod}
                     </td>
 
-                    {/* Latest spend + trend vs historical avg */}
+                    {/* Total spend + trend vs historical avg */}
                     <td className="px-4 py-3 text-right">
                       <p className="text-sm font-semibold text-text">{formatCurrency(row.latestSpend)}</p>
                       <TrendBadge value={row.spendTrend} suffix="% vs avg" />
+                    </td>
+
+                    {/* Avg daily spend */}
+                    <td className="px-4 py-3 text-right">
+                      <p className="text-sm font-semibold text-text">{formatCurrency(row.avgDailySpend)}</p>
+                      <span className="text-xs text-muted">/{row.daysInPeriod}d</span>
                     </td>
 
                     {/* Latest ROAS + ROAS trend */}
@@ -248,7 +297,7 @@ export function RecommendationPanel({ rows, view, targetIncrementalRoas, selecte
                   {/* Expanded detail */}
                   {isExpanded && (
                     <tr>
-                      <td colSpan={9} className="border-t border-border bg-surface-2 px-5 py-4">
+                      <td colSpan={10} className="border-t border-border bg-surface-2 px-5 py-4">
                         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
                           {/* Latest period */}
                           <div className="flex flex-col gap-0.5">
@@ -287,10 +336,45 @@ export function RecommendationPanel({ rows, view, targetIncrementalRoas, selecte
                             <p className="text-xs text-muted font-medium">Spend vs Hist. Avg</p>
                             <p className="text-sm font-semibold text-text">{formatPct(row.spendTrend)}</p>
                           </div>
-                          {/* Recommended spend */}
-                          <div className="flex flex-col gap-0.5">
-                            <p className="text-xs text-muted font-medium">Recommended Budget</p>
+                          {/* Recommended budget + daily spend action */}
+                          <div className="flex flex-col gap-0.5 col-span-2 sm:col-span-1">
+                            <p className="text-xs text-muted font-medium">Recommended Period Budget</p>
                             <p className="text-sm font-bold text-text">{formatCurrency(row.recommendedSpend)}</p>
+                          </div>
+                          {/* Daily spend target — the actionable number */}
+                          <div
+                            className={`flex flex-col gap-0.5 rounded-lg px-3 py-2 border col-span-2 sm:col-span-2 ${
+                              row.category === 'Scale'
+                                ? 'bg-scale-bg border-scale/30'
+                                : row.category === 'Reduce'
+                                ? 'bg-reduce-bg border-reduce/30'
+                                : 'bg-surface border-border'
+                            }`}
+                          >
+                            <p className="text-xs font-semibold text-muted uppercase tracking-wide">
+                              Set Google Ads Daily Budget to
+                            </p>
+                            <p
+                              className={`text-lg font-bold ${
+                                row.category === 'Scale' ? 'text-scale' : row.category === 'Reduce' ? 'text-reduce' : 'text-text'
+                              }`}
+                            >
+                              {formatCurrency(row.recommendedDailySpend)}
+                              <span className="text-xs font-normal text-muted ml-1">/ day</span>
+                            </p>
+                            {row.category !== 'Monitor' && (
+                              <p className="text-xs font-semibold mt-0.5">
+                                <span className={row.dailySpendDelta >= 0 ? 'text-scale' : 'text-reduce'}>
+                                  {row.dailySpendDelta >= 0 ? '+' : ''}{formatCurrency(row.dailySpendDelta)} / day
+                                </span>
+                                <span className="text-muted font-normal ml-1">
+                                  vs current {formatCurrency(row.avgDailySpend)}/day
+                                </span>
+                              </p>
+                            )}
+                            {row.category === 'Monitor' && (
+                              <p className="text-xs text-muted mt-0.5">No budget change — gather more data first.</p>
+                            )}
                           </div>
                           {/* Reason — spans full width */}
                           <div className="col-span-2 sm:col-span-3 lg:col-span-4 flex flex-col gap-0.5">
