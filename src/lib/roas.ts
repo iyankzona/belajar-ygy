@@ -404,11 +404,15 @@ export function consolidateRows(
       (a, b) => periodTime(a.period, mode) - periodTime(b.period, mode),
     )
 
-    // The "current" period is either the selected one (if the campaign has data for it)
-    // or the campaign's most recent period within the cutoff
+    // Find the row for the selected period. If a period is explicitly selected
+    // and this campaign has no data for it, skip it — it was inactive that period.
     const latestIdx = selectedPeriod
       ? campaignRows.findLastIndex((r) => r.period === selectedPeriod)
       : -1
+
+    // When a period is selected, only include campaigns that actually ran that period.
+    if (selectedPeriod && latestIdx === -1) return
+
     const currentIdx = latestIdx !== -1 ? latestIdx : campaignRows.length - 1
     const latest = campaignRows[currentIdx]
     const previous = currentIdx > 0 ? campaignRows[currentIdx - 1] : null
