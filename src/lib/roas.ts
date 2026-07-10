@@ -1,4 +1,4 @@
-export type ViewMode = 'weekly' | 'monthly'
+export type ViewMode = 'weekly' | 'biweekly' | 'monthly'
 export type Category = 'Scale' | 'Maintain' | 'Reduce' | 'Monitor'
 export type DecisionCadence = 'biweekly' | 'monthly'
 export const CADENCE_DAYS: Record<DecisionCadence, number> = { biweekly: 14, monthly: 30 }
@@ -75,6 +75,7 @@ export const CATEGORY_COLORS: Record<Category, string> = {
 
 export const REQUIRED_COLUMNS: Record<ViewMode, string[]> = {
   weekly: ['Week', 'Campaign', 'Cost', 'Total conv. value', 'ROAS'],
+  biweekly: ['Week', 'Campaign', 'Cost', 'Total conv. value', 'ROAS'], // same source format as weekly
   monthly: ['Month', 'Campaign', 'Cost', 'Total conv. value', 'ROAS'],
 }
 
@@ -161,6 +162,11 @@ export function loadRows(text: string, mode: ViewMode): RawRow[] {
 export function periodTime(period: string, mode: ViewMode): number {
   if (mode === 'monthly')
     return Date.parse(period.length === 7 ? `${period}-01` : period) || 0
+  // biweekly labels look like "2025-01-06 – 2025-01-19"; parse the start date
+  if (mode === 'biweekly') {
+    const start = period.split(/\s*[–-]\s*/)[0].trim()
+    return Date.parse(start) || 0
+  }
   return Date.parse(period.replace(/ - .*/, '')) || Date.parse(period) || 0
 }
 
@@ -170,6 +176,7 @@ export function periodTime(period: string, mode: ViewMode): number {
  */
 export function getDaysInPeriod(period: string, mode: ViewMode): number {
   if (mode === 'weekly') return 7
+  if (mode === 'biweekly') return 14
   // period format: "YYYY-MM" or "Jan 2025" or similar
   const ts = periodTime(period, mode)
   if (!ts) return 30
@@ -181,6 +188,60 @@ export function getDaysInPeriod(period: string, mode: ViewMode): number {
 export function getAvailablePeriods(rows: RawRow[], mode: ViewMode): string[] {
   const set = new Set(rows.map((r) => r.period))
   return Array.from(set).sort((a, b) => periodTime(a, mode) - periodTime(b, mode))
+}
+
+/**
+ * Aggregates weekly RawRows into biweekly periods.
+ * Consecutive weekly periods are paired (oldest-first): week 1+2, week 3+4, etc.
+ * Cost and revenue are summed within each pair.
+ * If there is an odd number of weeks, the last lone week forms its own period.
+ * The biweekly period label is the ISO date range of the two constituent weeks,
+ * e.g. "2025-01-06 – 2025-01-19".
+ */
+export function aggregateBiweekly(weeklyRows: RawRow[]): RawRow[] {
+  if (weeklyRows.length === 0) return []
+
+  // Get sorted unique weeks
+  const allWeeks = Array.from(new Set(weeklyRows.map((r) => r.period))).sort(
+    (a, b) => periodTime(a, 'weekly') - periodTime(b, 'weekly'),
+  )
+
+  // Build week-pair → biweekly label map
+  const weekToBiweekly = new Map<string, string>()
+  for (let i = 0; i < allWeeks.length; i++) {
+    const w1 = allWeeks[i]
+    const w2 = allWeeks[i + 1] // may be undefined for an odd trailing week
+
+    // Derive start/end dates for the label
+    const startStr = w1.split(/\s*[-–]\s*/)[0].trim()
+    const endCandidate = w2 ? w2.split(/\s*[-–]\s/).pop()?.trim() ?? w2 : w1.split(/\s*[-–]\s/).pop()?.trim() ?? w1
+    const label = `${startStr} – ${endCandidate}`
+
+    weekToBiweekly.set(w1, label)
+    if (w2) {
+      weekToBiweekly.set(w2, label)
+      i++ // skip w2 in the outer loop
+    }
+  }
+
+  // Aggregate rows by campaign + biweekly label
+  const aggregated = new Map<string, RawRow>()
+  for (const row of weeklyRows) {
+    const bwPeriod = weekToBiweekly.get(row.period)
+    if (!bwPeriod) continue
+    const key = `${bwPeriod}|||${row.campaign}`
+    const existing = aggregated.get(key)
+    if (existing) {
+      existing.cost += row.cost
+      existing.revenue += row.revenue
+    } else {
+      aggregated.set(key, { period: bwPeriod, campaign: row.campaign, cost: row.cost, revenue: row.revenue })
+    }
+  }
+
+  return Array.from(aggregated.values()).sort(
+    (a, b) => periodTime(a.period, 'biweekly') - periodTime(b.period, 'biweekly'),
+  )
 }
 
 // Categorize a campaign given incremental ROAS, current ROAS, previous ROAS,

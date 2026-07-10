@@ -18,6 +18,7 @@ import {
 } from 'recharts'
 
 import {
+  aggregateBiweekly,
   analyzeRows,
   CADENCE_DAYS,
   CATEGORY_COLORS,
@@ -191,17 +192,21 @@ export function Analyzer() {
   const [monthlyRows, setMonthlyRows] = useState<RawRow[]>([])
   const [weeklyFileName, setWeeklyFileName] = useState<string | null>(null)
   const [monthlyFileName, setMonthlyFileName] = useState<string | null>(null)
-  const [errors, setErrors] = useState<Record<ViewMode, string>>({ weekly: '', monthly: '' })
+  const [errors, setErrors] = useState<Record<ViewMode, string>>({ weekly: '', biweekly: '', monthly: '' })
   const [targetIncrementalRoas, setTargetIncrementalRoas] = useState(5)
   const [minimumSpend, setMinimumSpend] = useState(0)
   const [reallocationPercentage, setReallocationPercentage] = useState(15)
   const [showHistorical, setShowHistorical] = useState(false)
   const [selectedWeeklyPeriod, setSelectedWeeklyPeriod] = useState<string | null>(null)
+  const [selectedBiweeklyPeriod, setSelectedBiweeklyPeriod] = useState<string | null>(null)
   const [selectedMonthlyPeriod, setSelectedMonthlyPeriod] = useState<string | null>(null)
   const [decisionCadence, setDecisionCadence] = useState<DecisionCadence>('monthly')
   const [lastActionDates, setLastActionDates] = useState<CampaignActionsStore>(() => loadActions())
 
-  const sourceRows = view === 'weekly' ? weeklyRows : monthlyRows
+  // Biweekly rows are derived from weekly data — aggregated on the fly
+  const biweeklyRows = useMemo(() => aggregateBiweekly(weeklyRows), [weeklyRows])
+
+  const sourceRows = view === 'weekly' ? weeklyRows : view === 'biweekly' ? biweeklyRows : monthlyRows
   const hasData = sourceRows.length > 0
   const hasAnyData = weeklyRows.length > 0 || monthlyRows.length > 0
 
@@ -212,13 +217,17 @@ export function Analyzer() {
 
   // Active selected period — fall back to latest if none selected
   const selectedPeriod = useMemo(() => {
-    const chosen = view === 'weekly' ? selectedWeeklyPeriod : selectedMonthlyPeriod
+    const chosen =
+      view === 'weekly' ? selectedWeeklyPeriod
+      : view === 'biweekly' ? selectedBiweeklyPeriod
+      : selectedMonthlyPeriod
     if (chosen && availablePeriods.includes(chosen)) return chosen
     return availablePeriods[availablePeriods.length - 1] ?? null
-  }, [view, selectedWeeklyPeriod, selectedMonthlyPeriod, availablePeriods])
+  }, [view, selectedWeeklyPeriod, selectedBiweeklyPeriod, selectedMonthlyPeriod, availablePeriods])
 
   const setSelectedPeriod = (p: string) => {
     if (view === 'weekly') setSelectedWeeklyPeriod(p)
+    else if (view === 'biweekly') setSelectedBiweeklyPeriod(p)
     else setSelectedMonthlyPeriod(p)
   }
 
@@ -421,7 +430,7 @@ export function Analyzer() {
             {hasData && availablePeriods.length > 1 && (
               <div className="flex items-center gap-2">
                 <label className="text-xs font-medium text-muted whitespace-nowrap">
-                  {view === 'weekly' ? 'Week' : 'Month'}:
+                  {view === 'weekly' ? 'Week' : view === 'biweekly' ? 'Biweek' : 'Month'}:
                 </label>
                 <div className="flex items-center gap-1">
                   <button
@@ -466,17 +475,19 @@ export function Analyzer() {
             )}
             {/* View tabs */}
             <div className="flex items-center gap-1 bg-surface border border-border rounded-lg p-1">
-              {(['weekly', 'monthly'] as ViewMode[]).map((tab) => (
+              {(['weekly', 'biweekly', 'monthly'] as ViewMode[]).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setView(tab)}
-                  className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer ${
+                  disabled={tab === 'biweekly' && weeklyRows.length === 0}
+                  title={tab === 'biweekly' && weeklyRows.length === 0 ? 'Upload weekly data first' : undefined}
+                  className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                     view === tab
                       ? 'bg-primary text-white shadow-sm'
                       : 'text-muted hover:text-text'
                   }`}
                 >
-                  {tab === 'weekly' ? 'Weekly' : 'Monthly'}
+                  {tab === 'weekly' ? 'Weekly' : tab === 'biweekly' ? 'Biweekly' : 'Monthly'}
                 </button>
               ))}
             </div>
@@ -490,9 +501,14 @@ export function Analyzer() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
               </svg>
               <div>
-                <p className="font-semibold text-text">No {view} data uploaded yet</p>
+                <p className="font-semibold text-text">
+                  {view === 'biweekly' ? 'No biweekly data available' : `No ${view} data uploaded yet`}
+                </p>
                 <p className="text-sm text-muted mt-1">
-                  Upload a <strong>{view}</strong> CSV file above to see your analysis.
+                  {view === 'biweekly'
+                    ? 'Upload a weekly CSV file — biweekly periods are aggregated automatically from your weekly data.'
+                    : <>Upload a <strong>{view}</strong> CSV file above to see your analysis.</>
+                  }
                 </p>
               </div>
             </Card>
@@ -531,14 +547,16 @@ export function Analyzer() {
                     <MetricTile
                       label="Avg Daily Spend"
                       value={avgDailySpend !== null ? formatCurrency(avgDailySpend) : '—'}
-                      sub={
-                        selectedPeriod
-                          ? view === 'weekly'
-                            ? 'per day · 7-day week'
-                            : `per day · ${getDaysInPeriod(selectedPeriod, view)}-day month`
-                          : undefined
-                      }
-                      tooltip={`Total spend ÷ days in the selected ${view === 'weekly' ? 'week (7 days)' : 'month'}. Use this as your daily budget cap in Google Ads.`}
+                  sub={
+                    selectedPeriod
+                      ? view === 'weekly'
+                        ? 'per day · 7-day week'
+                        : view === 'biweekly'
+                        ? 'per day · 14-day biweek'
+                        : `per day · ${getDaysInPeriod(selectedPeriod, view)}-day month`
+                      : undefined
+                  }
+                  tooltip={`Total spend ÷ days in the selected ${view === 'weekly' ? 'week (7 days)' : view === 'biweekly' ? 'biweekly period (14 days)' : 'month'}. Use this as your daily budget cap in Google Ads.`}
                       alignRight
                     />
                   </div>
