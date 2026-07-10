@@ -1,8 +1,8 @@
 'use client'
 
 import { Fragment, useState } from 'react'
-import type { Category, ConsolidatedRow, ViewMode } from '@/lib/roas'
-import { CATEGORY_COLORS, formatCurrency, formatPct, formatRoas } from '@/lib/roas'
+import type { Category, ConsolidatedRow, DecisionCadence, ViewMode } from '@/lib/roas'
+import { CADENCE_DAYS, CATEGORY_COLORS, formatCurrency, formatPct, formatRoas } from '@/lib/roas'
 
 // ---------------------------------------------------------------------------
 // Tiny reusable pieces
@@ -115,6 +115,8 @@ type Props = {
   targetIncrementalRoas: number
   selectedPeriod: string | null
   totalPeriods: number
+  decisionCadence: DecisionCadence
+  onAction: (campaign: string) => void
 }
 
 export function RecommendationPanel({
@@ -123,6 +125,8 @@ export function RecommendationPanel({
   targetIncrementalRoas,
   selectedPeriod,
   totalPeriods,
+  decisionCadence,
+  onAction,
 }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [filter, setFilter] = useState<'All' | Category>('All')
@@ -157,6 +161,13 @@ export function RecommendationPanel({
                   {totalPeriods > 1
                     ? ` — based on ${totalPeriods - 1} prior ${periodLabel}${totalPeriods - 1 !== 1 ? 's' : ''}`
                     : ' — no prior data yet'}
+                  {' · '}
+                  <span className="text-text font-medium">
+                    {decisionCadence === 'biweekly' ? 'Biweekly' : 'Monthly'} cadence
+                  </span>
+                  {' — Scale/Reduce suppressed for '}
+                  <span className="font-medium text-text">{CADENCE_DAYS[decisionCadence]} days</span>
+                  {' after any action.'}
                 </>
               ) : (
                 'One recommendation per campaign based on full historical context.'
@@ -337,14 +348,33 @@ export function RecommendationPanel({
 
                       {/* Action */}
                       <td className="px-4 py-3">
-                        <span
-                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border ${CATEGORY_CHIP[row.category]}`}
-                        >
-                          {row.category}
-                        </span>
-                        <p className="text-[11px] text-muted mt-1 leading-relaxed max-w-[180px]">
-                          {row.recommendation}
-                        </p>
+                        {row.cooldownActive ? (
+                          <div>
+                            <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold border bg-surface-2 border-border text-muted">
+                              <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+                              </svg>
+                              Monitoring
+                            </span>
+                            <p className="text-[11px] text-muted mt-1 leading-relaxed max-w-[180px]">
+                              Next review in{' '}
+                              <span className="font-semibold text-text">
+                                {row.daysUntilNextReview}d
+                              </span>
+                            </p>
+                          </div>
+                        ) : (
+                          <div>
+                            <span
+                              className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border ${CATEGORY_CHIP[row.category]}`}
+                            >
+                              {row.category}
+                            </span>
+                            <p className="text-[11px] text-muted mt-1 leading-relaxed max-w-[180px]">
+                              {row.recommendation}
+                            </p>
+                          </div>
+                        )}
                       </td>
 
                       {/* Chevron */}
@@ -475,6 +505,54 @@ export function RecommendationPanel({
                                 Why this recommendation?
                               </p>
                               <p className="text-sm text-text leading-relaxed">{row.reason}</p>
+                            </div>
+
+                            {/* Divider */}
+                            <div className="border-t border-border" />
+
+                            {/* Row 4: Action tracking */}
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                              <div>
+                                <p className="text-[11px] font-semibold text-muted uppercase tracking-wide mb-1">
+                                  Budget Action Tracking
+                                </p>
+                                {row.cooldownActive ? (
+                                  <p className="text-xs text-muted leading-relaxed">
+                                    Last action:{' '}
+                                    <span className="font-medium text-text">
+                                      {row.lastActionDate ? new Date(row.lastActionDate).toLocaleDateString() : '—'}
+                                    </span>
+                                    {' · '}
+                                    <span className="font-medium text-monitor">
+                                      Next review in {row.daysUntilNextReview} day{row.daysUntilNextReview !== 1 ? 's' : ''}
+                                    </span>
+                                    {' '}({decisionCadence === 'biweekly' ? 'Biweekly' : 'Monthly'} cadence)
+                                  </p>
+                                ) : row.lastActionDate ? (
+                                  <p className="text-xs text-muted">
+                                    Last action:{' '}
+                                    <span className="font-medium text-text">
+                                      {new Date(row.lastActionDate).toLocaleDateString()}
+                                    </span>
+                                    {' · Cooldown window has passed — a new recommendation is now active.'}
+                                  </p>
+                                ) : (
+                                  <p className="text-xs text-muted">
+                                    No action recorded yet. Click the button when you apply this recommendation in Google Ads.
+                                  </p>
+                                )}
+                              </div>
+                              {!row.cooldownActive && (row.category === 'Scale' || row.category === 'Reduce') && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); onAction(row.campaign) }}
+                                  className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-primary bg-primary-light text-primary px-3 py-2 text-xs font-semibold hover:bg-primary hover:text-white transition-colors cursor-pointer"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} aria-hidden="true">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                                  </svg>
+                                  Mark as Actioned
+                                </button>
+                              )}
                             </div>
 
                           </div>

@@ -1,5 +1,7 @@
 export type ViewMode = 'weekly' | 'monthly'
 export type Category = 'Scale' | 'Maintain' | 'Reduce' | 'Monitor'
+export type DecisionCadence = 'biweekly' | 'monthly'
+export const CADENCE_DAYS: Record<DecisionCadence, number> = { biweekly: 14, monthly: 30 }
 
 export type RawRow = {
   period: string
@@ -52,6 +54,10 @@ export type ConsolidatedRow = {
   avgDailySpend: number         // latestSpend / daysInPeriod
   recommendedDailySpend: number // recommendedSpend / daysInPeriod
   dailySpendDelta: number       // recommendedDailySpend - avgDailySpend
+  // decision cadence / cooldown
+  lastActionDate: string | null     // ISO date of last recorded action, if any
+  cooldownActive: boolean           // true if within the cadence cooldown window
+  daysUntilNextReview: number | null // days remaining in cooldown window
   // recommendation
   category: Category
   reason: string
@@ -318,6 +324,8 @@ export function consolidateRows(
   minimumSpend: number,
   reallocationPercentage: number,
   selectedPeriod?: string,
+  lastActionDates: Record<string, string> = {},
+  cadenceDays = 30,
 ): ConsolidatedRow[] {
   // Limit to rows up to and including the selected period
   const cutoff = selectedPeriod ? periodTime(selectedPeriod, mode) : Infinity
@@ -387,7 +395,7 @@ export function consolidateRows(
     const confidence: 'High' | 'Medium' | 'Low' =
       historicalRows.length >= 4 ? 'High' : historicalRows.length >= 2 ? 'Medium' : 'Low'
 
-    const { category, reason } = categorize({
+    let { category, reason } = categorize({
       incrementalRoas,
       currentRoas: latestRoas,
       previousRoas: prevRoas,
@@ -396,6 +404,21 @@ export function consolidateRows(
       targetIncrementalRoas,
       hasHistory: historicalRows.length > 0,
     })
+
+    // Apply cooldown: suppress Scale/Reduce if within decision-cadence window
+    const lastActionIso = lastActionDates[campaign] ?? null
+    let cooldownActive = false
+    let daysUntilNextReview: number | null = null
+    if (lastActionIso && (category === 'Scale' || category === 'Reduce')) {
+      const daysSince = Math.floor((Date.now() - new Date(lastActionIso).getTime()) / 86_400_000)
+      const remaining = cadenceDays - daysSince
+      if (remaining > 0) {
+        cooldownActive = true
+        daysUntilNextReview = remaining
+        category = 'Monitor'
+        reason = `Budget was last adjusted ${daysSince}d ago — next review in ${remaining} day${remaining !== 1 ? 's' : ''}.`
+      }
+    }
 
     const multiplier =
       category === 'Scale'
@@ -429,6 +452,9 @@ export function consolidateRows(
       avgDailySpend,
       recommendedDailySpend,
       dailySpendDelta,
+      lastActionDate: lastActionIso,
+      cooldownActive,
+      daysUntilNextReview,
       category,
       reason,
       recommendedSpend,

@@ -19,6 +19,7 @@ import {
 
 import {
   analyzeRows,
+  CADENCE_DAYS,
   CATEGORY_COLORS,
   computeConsolidatedMetrics,
   computeMetrics,
@@ -30,9 +31,11 @@ import {
   loadRows,
   periodTime,
   type Category,
+  type DecisionCadence,
   type RawRow,
   type ViewMode,
 } from '@/lib/roas'
+import { loadActions, recordAction, type CampaignActionsStore } from '@/lib/campaignActions'
 import { AnalysisTable } from '@/components/AnalysisTable'
 import { BudgetSummary } from '@/components/BudgetSummary'
 import { RecommendationPanel } from '@/components/RecommendationPanel'
@@ -195,6 +198,8 @@ export function Analyzer() {
   const [showHistorical, setShowHistorical] = useState(false)
   const [selectedWeeklyPeriod, setSelectedWeeklyPeriod] = useState<string | null>(null)
   const [selectedMonthlyPeriod, setSelectedMonthlyPeriod] = useState<string | null>(null)
+  const [decisionCadence, setDecisionCadence] = useState<DecisionCadence>('monthly')
+  const [lastActionDates, setLastActionDates] = useState<CampaignActionsStore>(() => loadActions())
 
   const sourceRows = view === 'weekly' ? weeklyRows : monthlyRows
   const hasData = sourceRows.length > 0
@@ -223,9 +228,13 @@ export function Analyzer() {
   )
 
   const consolidatedRows = useMemo(
-    () => consolidateRows(sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod ?? undefined),
-    [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod],
+    () => consolidateRows(sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod ?? undefined, lastActionDates, CADENCE_DAYS[decisionCadence]),
+    [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod, lastActionDates, decisionCadence],
   )
+
+  const handleAction = (campaign: string) => {
+    setLastActionDates((prev) => recordAction(prev, campaign))
+  }
 
   const metrics = useMemo(() => computeConsolidatedMetrics(consolidatedRows), [consolidatedRows])
 
@@ -335,7 +344,7 @@ export function Analyzer() {
         <section>
           <SectionLabel step={2} title="Configure parameters" />
           <Card className="p-5">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-text-light uppercase tracking-wide">
                   Target Incremental ROAS
@@ -377,6 +386,22 @@ export function Analyzer() {
                   <option value="20">20% — Aggressive</option>
                 </select>
                 <p className="text-xs text-muted">% to increase or decrease budget per recommendation.</p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold text-text-light uppercase tracking-wide">
+                  Decision Cadence
+                </label>
+                <select
+                  value={decisionCadence}
+                  onChange={(e) => setDecisionCadence(e.target.value as DecisionCadence)}
+                  className={inputClass}
+                >
+                  <option value="biweekly">Biweekly — every 14 days</option>
+                  <option value="monthly">Monthly — every 30 days</option>
+                </select>
+                <p className="text-xs text-muted">
+                  After acting on a campaign, Scale/Reduce is suppressed until the next review window.
+                </p>
               </div>
             </div>
           </Card>
@@ -586,6 +611,8 @@ export function Analyzer() {
                 targetIncrementalRoas={targetIncrementalRoas}
                 selectedPeriod={selectedPeriod}
                 totalPeriods={availablePeriods.length}
+                decisionCadence={decisionCadence}
+                onAction={handleAction}
               />
 
               {/* Budget summary */}
