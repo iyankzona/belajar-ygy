@@ -353,7 +353,7 @@ export function Analyzer() {
         <section>
           <SectionLabel step={2} title="Configure parameters" />
           <Card className="p-5">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-semibold text-text-light uppercase tracking-wide">
                   Target Incremental ROAS
@@ -396,22 +396,7 @@ export function Analyzer() {
                 </select>
                 <p className="text-xs text-muted">% to increase or decrease budget per recommendation.</p>
               </div>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold text-text-light uppercase tracking-wide">
-                  Decision Cadence
-                </label>
-                <select
-                  value={decisionCadence}
-                  onChange={(e) => setDecisionCadence(e.target.value as DecisionCadence)}
-                  className={inputClass}
-                >
-                  <option value="biweekly">Biweekly — every 14 days</option>
-                  <option value="monthly">Monthly — every 30 days</option>
-                </select>
-                <p className="text-xs text-muted">
-                  After acting on a campaign, Scale/Reduce is suppressed until the next review window.
-                </p>
-              </div>
+
             </div>
           </Card>
         </section>
