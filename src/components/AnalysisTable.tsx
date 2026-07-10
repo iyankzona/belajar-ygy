@@ -28,7 +28,7 @@ function Th({ children, className = '' }: { children?: React.ReactNode; classNam
 
 function Td({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <td className={`px-3 py-3 text-sm text-text border-t border-border whitespace-nowrap ${className}`}>
+    <td className={`px-3 py-3 text-sm text-text border-t border-border ${className}`}>
       {children}
     </td>
   )
@@ -109,7 +109,7 @@ export function AnalysisTable({ rows, view }: Props) {
                 <Fragment key={key}>
                   <tr className="hover:bg-surface-2 transition-colors">
                     <Td className="text-muted">{row.period}</Td>
-                    <Td className="font-medium max-w-[180px] truncate">{row.campaign}</Td>
+                    <Td className="font-medium min-w-[200px] whitespace-normal break-words">{row.campaign}</Td>
                     <Td>{formatCurrency(row.currentSpend)}</Td>
                     <Td>{formatCurrency(row.currentRevenue)}</Td>
                     <Td>{formatRoas(row.currentRoas)}</Td>
@@ -131,7 +131,7 @@ export function AnalysisTable({ rows, view }: Props) {
                         {row.category}
                       </span>
                     </Td>
-                    <Td className="text-text-light max-w-[220px] truncate">{row.recommendation}</Td>
+                    <Td className="text-muted min-w-[200px] whitespace-normal break-words">{row.recommendation}</Td>
                     <Td>
                       <button
                         onClick={() => toggleExpand(key)}

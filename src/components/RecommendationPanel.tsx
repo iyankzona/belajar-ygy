@@ -194,7 +194,7 @@ export function RecommendationPanel({
           <thead>
             <tr className="bg-surface-2 border-b border-border">
               {/* Campaign */}
-              <th className="px-4 py-3 text-left w-52">
+              <th className="px-4 py-3 text-left min-w-[220px]">
                 <span className="text-[11px] font-semibold text-muted uppercase tracking-wide">Campaign</span>
               </th>
               {/* Spend */}
@@ -269,15 +269,12 @@ export function RecommendationPanel({
                     >
                       {/* Campaign name */}
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-start gap-2">
                           <span
-                            className="w-2 h-2 rounded-full shrink-0"
+                            className="w-2 h-2 rounded-full shrink-0 mt-1"
                             style={{ backgroundColor: CATEGORY_COLORS[row.category] }}
                           />
-                          <span
-                            className="text-sm font-medium text-text truncate max-w-[170px]"
-                            title={row.campaign}
-                          >
+                          <span className="text-sm font-medium text-text break-words">
                             {row.campaign}
                           </span>
                         </div>
