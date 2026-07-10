@@ -233,7 +233,13 @@ export function RecommendationPanel({
               <th className="px-4 py-3 text-right">
                 <span className="inline-flex items-center justify-end text-[11px] font-semibold text-muted uppercase tracking-wide">
                   iROAS
-                  <Tooltip text="Incremental ROAS: return on the marginal spend vs the prior period. Main signal for Scale vs Reduce." />
+                  <Tooltip text="Marginal iROAS from a log-log power-curve regression (b × ROAS at current spend). Falls back to rolling-window average or period-over-period delta when history is insufficient. The key signal for scale vs reduce decisions." />
+                </span>
+              </th>
+              <th className="px-4 py-3 text-center">
+                <span className="inline-flex items-center justify-center text-[11px] font-semibold text-muted uppercase tracking-wide">
+                  Confidence
+                  <Tooltip text="High = power-curve fit R²≥0.70. Medium = power-curve with lower R² or 4+ periods. Low = fewer than 6 periods, using rolling-avg fallback. Shows method and period count used." />
                 </span>
               </th>
               {/* Confidence */}
@@ -316,33 +322,41 @@ export function RecommendationPanel({
                         <TrendBadge value={row.rroasTrend} suffix=" vs avg" />
                       </td>
 
-                      {/* iROAS */}
+                      {/* iROAS — shows marginal iROAS from regression, falls back to delta */}
                       <td className="px-4 py-3 text-right">
-                        <p
-                          className={`text-sm font-bold tabular-nums ${
-                            row.incrementalRoas === null
-                              ? 'text-muted'
-                              : iRoasOk
-                              ? 'text-scale'
-                              : 'text-reduce'
-                          }`}
-                        >
-                          {formatRoas(row.incrementalRoas)}
-                        </p>
-                        <p className="text-[11px] text-muted">target: {targetIncrementalRoas}</p>
+                        {(() => {
+                          const displayIROAS = row.marginaliROAS ?? row.incrementalRoas
+                          const isOk = displayIROAS !== null && displayIROAS >= targetIncrementalRoas
+                          return (
+                            <>
+                              <p className={`text-sm font-bold tabular-nums ${displayIROAS === null ? 'text-muted' : isOk ? 'text-scale' : 'text-reduce'}`}>
+                                {formatRoas(displayIROAS)}
+                              </p>
+                              <p className="text-[11px] text-muted">
+                                {row.regressionMethod === 'power-curve'
+                                  ? 'marginal · target: ' + targetIncrementalRoas
+                                  : row.regressionMethod === 'rolling-avg'
+                                    ? 'rolling avg · target: ' + targetIncrementalRoas
+                                    : 'delta · target: ' + targetIncrementalRoas}
+                              </p>
+                            </>
+                          )
+                        })()}
                       </td>
 
                       {/* Confidence */}
                       <td className="px-4 py-3 text-center">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${CONFIDENCE_CHIP[row.confidence]}`}
-                        >
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${CONFIDENCE_CHIP[row.confidence]}`}>
                           {row.confidence}
                         </span>
                         <p className="text-[11px] text-muted mt-0.5">
-                          {row.historicalPeriods > 0
-                            ? `${row.historicalPeriods} prior ${periodLabel}${row.historicalPeriods !== 1 ? 's' : ''}`
-                            : 'first period'}
+                          {row.regressionMethod === 'power-curve'
+                            ? `curve · ${row.regressionPeriods}p`
+                            : row.regressionMethod === 'rolling-avg'
+                              ? `rolling · ${row.regressionPeriods}p`
+                              : row.historicalPeriods > 0
+                                ? `${row.historicalPeriods} prior ${periodLabel}${row.historicalPeriods !== 1 ? 's' : ''}`
+                                : 'first period'}
                         </p>
                       </td>
 
@@ -424,6 +438,81 @@ export function RecommendationPanel({
                                 />
                                 <Stat label="Hist. Avg Revenue" value={formatCurrency(row.historicalAvgRevenue)} />
                                 <Stat label="Hist. Avg ROAS" value={formatRoas(row.historicalAvgRoas)} />
+                              </div>
+                            </div>
+
+                            {/* Divider */}
+                            <div className="border-t border-border" />
+
+                            {/* Row 1b: Regression Signal */}
+                            <div>
+                              <p className="text-[11px] font-semibold text-muted uppercase tracking-wide mb-3">
+                                iROAS Signal
+                                {row.regressionMethod === 'power-curve' && (
+                                  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-maintain-bg text-maintain border border-maintain/30 normal-case tracking-normal">
+                                    power-curve · {row.regressionPeriods} periods
+                                  </span>
+                                )}
+                                {row.regressionMethod === 'rolling-avg' && (
+                                  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-monitor-bg text-monitor border border-monitor/30 normal-case tracking-normal">
+                                    rolling-avg fallback · {row.regressionPeriods} periods
+                                  </span>
+                                )}
+                                {row.regressionMethod === 'none' && (
+                                  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-surface-2 text-muted border border-border normal-case tracking-normal">
+                                    insufficient data
+                                  </span>
+                                )}
+                              </p>
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                <Stat
+                                  label="Marginal iROAS"
+                                  value={formatRoas(row.marginaliROAS)}
+                                  sub={
+                                    row.regressionMethod === 'power-curve'
+                                      ? 'from curve derivative'
+                                      : row.regressionMethod === 'rolling-avg'
+                                        ? 'rolling avg fallback'
+                                        : 'unavailable'
+                                  }
+                                  accent={
+                                    row.marginaliROAS !== null
+                                      ? row.marginaliROAS >= targetIncrementalRoas
+                                        ? 'positive'
+                                        : 'negative'
+                                      : undefined
+                                  }
+                                />
+                                <Stat
+                                  label="14-day iROAS"
+                                  value={formatRoas(row.rolling14iROAS)}
+                                  sub="trailing 2 periods"
+                                  accent={
+                                    row.rolling14iROAS !== null
+                                      ? row.rolling14iROAS >= targetIncrementalRoas ? 'positive' : 'negative'
+                                      : undefined
+                                  }
+                                />
+                                <Stat
+                                  label="28-day iROAS"
+                                  value={formatRoas(row.rolling28iROAS)}
+                                  sub="trailing 4 periods"
+                                  accent={
+                                    row.rolling28iROAS !== null
+                                      ? row.rolling28iROAS >= targetIncrementalRoas ? 'positive' : 'negative'
+                                      : undefined
+                                  }
+                                />
+                                <Stat
+                                  label="Period-over-Period"
+                                  value={formatRoas(row.incrementalRoas)}
+                                  sub="two-point delta"
+                                  accent={
+                                    row.incrementalRoas !== null
+                                      ? row.incrementalRoas >= targetIncrementalRoas ? 'positive' : 'negative'
+                                      : undefined
+                                  }
+                                />
                               </div>
                             </div>
 
