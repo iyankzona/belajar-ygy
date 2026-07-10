@@ -29,9 +29,9 @@ function Tooltip({ text }: { text: string }) {
         />
       </svg>
       {show && (
-        <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 w-52 rounded-lg bg-text text-surface text-xs leading-relaxed p-3 shadow-lg pointer-events-none whitespace-normal">
+        <span className="absolute top-full left-1/2 -translate-x-1/2 mt-2 z-[100] w-52 rounded-lg bg-[#1c1917] text-white text-xs leading-relaxed p-3 shadow-xl pointer-events-none whitespace-normal">
+          <span className="absolute bottom-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-b-4 border-l-transparent border-r-transparent border-b-[#1c1917]" />
           {text}
-          <span className="absolute top-full left-1/2 -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-text" />
         </span>
       )}
     </span>
