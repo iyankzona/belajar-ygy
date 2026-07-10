@@ -1,5 +1,7 @@
-export type ViewMode = 'weekly' | 'monthly'
+export type ViewMode = 'weekly' | 'biweekly' | 'monthly'
 export type Category = 'Scale' | 'Maintain' | 'Reduce' | 'Monitor'
+export type DecisionCadence = 'biweekly' | 'monthly'
+export const CADENCE_DAYS: Record<DecisionCadence, number> = { biweekly: 14, monthly: 30 }
 
 export type RawRow = {
   period: string
@@ -47,6 +49,21 @@ export type ConsolidatedRow = {
   incrementalSpend: number | null
   incrementalRevenue: number | null
   incrementalRoas: number | null
+  // power-curve regression iROAS (marginal ROAS at current spend)
+  marginaliROAS: number | null       // derivative of fitted power curve at current spend
+  rolling14iROAS: number | null      // iROAS over the trailing 2 periods (approx 14 days)
+  rolling28iROAS: number | null      // iROAS over the trailing 4 periods (approx 28 days)
+  regressionMethod: 'power-curve' | 'rolling-avg' | 'none'
+  regressionPeriods: number          // how many periods were used in the regression
+  // daily spend breakdown
+  daysInPeriod: number          // 7 for weekly, days-in-month for monthly
+  avgDailySpend: number         // latestSpend / daysInPeriod
+  recommendedDailySpend: number // recommendedSpend / daysInPeriod
+  dailySpendDelta: number       // recommendedDailySpend - avgDailySpend
+  // decision cadence / cooldown
+  lastActionDate: string | null     // ISO date of last recorded action, if any
+  cooldownActive: boolean           // true if within the cadence cooldown window
+  daysUntilNextReview: number | null // days remaining in cooldown window
   // recommendation
   category: Category
   reason: string
@@ -64,6 +81,7 @@ export const CATEGORY_COLORS: Record<Category, string> = {
 
 export const REQUIRED_COLUMNS: Record<ViewMode, string[]> = {
   weekly: ['Week', 'Campaign', 'Cost', 'Total conv. value', 'ROAS'],
+  biweekly: ['Week', 'Campaign', 'Cost', 'Total conv. value', 'ROAS'], // same source format as weekly
   monthly: ['Month', 'Campaign', 'Cost', 'Total conv. value', 'ROAS'],
 }
 
@@ -150,7 +168,26 @@ export function loadRows(text: string, mode: ViewMode): RawRow[] {
 export function periodTime(period: string, mode: ViewMode): number {
   if (mode === 'monthly')
     return Date.parse(period.length === 7 ? `${period}-01` : period) || 0
+  // biweekly labels look like "2025-01-06 – 2025-01-19"; parse the start date
+  if (mode === 'biweekly') {
+    const start = period.split(/\s*[–-]\s*/)[0].trim()
+    return Date.parse(start) || 0
+  }
   return Date.parse(period.replace(/ - .*/, '')) || Date.parse(period) || 0
+}
+
+/**
+ * Returns the number of days in the given period string.
+ * Weekly periods are always 7. Monthly periods are the actual days in that month.
+ */
+export function getDaysInPeriod(period: string, mode: ViewMode): number {
+  if (mode === 'weekly') return 7
+  if (mode === 'biweekly') return 14
+  // period format: "YYYY-MM" or "Jan 2025" or similar
+  const ts = periodTime(period, mode)
+  if (!ts) return 30
+  const d = new Date(ts)
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
 }
 
 /** Returns all unique periods from the raw rows, sorted chronologically. */
@@ -159,10 +196,195 @@ export function getAvailablePeriods(rows: RawRow[], mode: ViewMode): string[] {
   return Array.from(set).sort((a, b) => periodTime(a, mode) - periodTime(b, mode))
 }
 
-// Categorize a campaign given incremental ROAS, current ROAS, previous ROAS,
-// minimum spend, and target iROAS.
+/**
+ * Aggregates weekly RawRows into biweekly periods.
+ * Consecutive weekly periods are paired (oldest-first): week 1+2, week 3+4, etc.
+ * Cost and revenue are summed within each pair.
+ * If there is an odd number of weeks, the last lone week forms its own period.
+ * The biweekly period label is the ISO date range of the two constituent weeks,
+ * e.g. "2025-01-06 – 2025-01-19".
+ */
+export function aggregateBiweekly(weeklyRows: RawRow[]): RawRow[] {
+  if (weeklyRows.length === 0) return []
+
+  // Get sorted unique weeks
+  const allWeeks = Array.from(new Set(weeklyRows.map((r) => r.period))).sort(
+    (a, b) => periodTime(a, 'weekly') - periodTime(b, 'weekly'),
+  )
+
+  // Build week-pair → biweekly label map
+  const weekToBiweekly = new Map<string, string>()
+  for (let i = 0; i < allWeeks.length; i++) {
+    const w1 = allWeeks[i]
+    const w2 = allWeeks[i + 1] // may be undefined for an odd trailing week
+
+    // Derive start/end dates for the label
+    const startStr = w1.split(/\s*[-–]\s*/)[0].trim()
+    const endCandidate = w2 ? w2.split(/\s*[-–]\s/).pop()?.trim() ?? w2 : w1.split(/\s*[-–]\s/).pop()?.trim() ?? w1
+    const label = `${startStr} – ${endCandidate}`
+
+    weekToBiweekly.set(w1, label)
+    if (w2) {
+      weekToBiweekly.set(w2, label)
+      i++ // skip w2 in the outer loop
+    }
+  }
+
+  // Aggregate rows by campaign + biweekly label
+  const aggregated = new Map<string, RawRow>()
+  for (const row of weeklyRows) {
+    const bwPeriod = weekToBiweekly.get(row.period)
+    if (!bwPeriod) continue
+    const key = `${bwPeriod}|||${row.campaign}`
+    const existing = aggregated.get(key)
+    if (existing) {
+      existing.cost += row.cost
+      existing.revenue += row.revenue
+    } else {
+      aggregated.set(key, { period: bwPeriod, campaign: row.campaign, cost: row.cost, revenue: row.revenue })
+    }
+  }
+
+  return Array.from(aggregated.values()).sort(
+    (a, b) => periodTime(a.period, 'biweekly') - periodTime(b.period, 'biweekly'),
+  )
+}
+
+// ─── Power-curve regression engine ──────────────────────────────────────────
+// Fits log(revenue) ~ a + b*log(spend) via OLS on the trailing N periods.
+// The derivative of the fitted curve revenue = exp(a) * spend^b at current spend
+// is: dRevenue/dSpend = b * revenue / spend = b * ROAS.
+// This is the marginal (incremental) ROAS at the current spend level.
+
+export type RegressionResult = {
+  marginalROAS: number | null
+  rolling14: number | null   // iROAS over the 2 most-recent prior periods
+  rolling28: number | null   // iROAS over the 4 most-recent prior periods
+  method: 'power-curve' | 'rolling-avg' | 'none'
+  periodsUsed: number
+  elasticity: number | null  // b coefficient — the spend elasticity
+  rSquared: number | null
+}
+
+const MIN_REGRESSION_PERIODS = 6
+const MAX_REGRESSION_PERIODS = 12
+
+/**
+ * Computes simple OLS slope for y ~ a + b*x, returning { slope, intercept, r2 }.
+ */
+function ols(xs: number[], ys: number[]): { slope: number; intercept: number; r2: number } | null {
+  const n = xs.length
+  if (n < 2) return null
+  const xMean = xs.reduce((s, v) => s + v, 0) / n
+  const yMean = ys.reduce((s, v) => s + v, 0) / n
+  let ssXX = 0, ssXY = 0, ssYY = 0
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - xMean
+    const dy = ys[i] - yMean
+    ssXX += dx * dx
+    ssXY += dx * dy
+    ssYY += dy * dy
+  }
+  if (ssXX === 0) return null
+  const slope = ssXY / ssXX
+  const intercept = yMean - slope * xMean
+  const r2 = ssYY === 0 ? 1 : (ssXY * ssXY) / (ssXX * ssYY)
+  return { slope, intercept, r2 }
+}
+
+/**
+ * Computes delta iROAS over a rolling window of `windowPeriods` prior periods.
+ * Returns null if there is insufficient data.
+ * windowPeriods=2 → trailing ~14 days (weekly), windowPeriods=4 → ~28 days.
+ */
+function rollingDeltaIROAS(historicalRows: RawRow[], current: RawRow, windowPeriods: number): number | null {
+  if (historicalRows.length < windowPeriods) return null
+  const window = historicalRows.slice(-windowPeriods)  // most recent N prior periods
+  const baseSpend = window.reduce((s, r) => s + r.cost, 0) / window.length
+  const baseRevenue = window.reduce((s, r) => s + r.revenue, 0) / window.length
+  const deltaSpend = current.cost - baseSpend
+  const deltaRevenue = current.revenue - baseRevenue
+  if (deltaSpend <= 0) return null
+  return deltaRevenue / deltaSpend
+}
+
+export function computeRegression(historicalRows: RawRow[], current: RawRow): RegressionResult {
+  // Rolling window iROAS (always computed when possible)
+  const rolling14 = rollingDeltaIROAS(historicalRows, current, 2)
+  const rolling28 = rollingDeltaIROAS(historicalRows, current, 4)
+
+  // Determine how many periods to use for regression (up to MAX, at least MIN)
+  const allRows = [...historicalRows, current]
+  const regressionPool = allRows.slice(-MAX_REGRESSION_PERIODS)
+  const n = regressionPool.length
+
+  if (n < MIN_REGRESSION_PERIODS) {
+    // Not enough history — fall back to simple rolling average delta
+    const fallbackIROAS = rolling14 ?? rolling28 ?? null
+    return {
+      marginalROAS: fallbackIROAS,
+      rolling14,
+      rolling28,
+      method: fallbackIROAS !== null ? 'rolling-avg' : 'none',
+      periodsUsed: n,
+      elasticity: null,
+      rSquared: null,
+    }
+  }
+
+  // Filter out zero-spend or zero-revenue rows (log is undefined there)
+  const valid = regressionPool.filter((r) => r.cost > 0 && r.revenue > 0)
+  if (valid.length < MIN_REGRESSION_PERIODS) {
+    const fallbackIROAS = rolling14 ?? rolling28 ?? null
+    return {
+      marginalROAS: fallbackIROAS,
+      rolling14,
+      rolling28,
+      method: fallbackIROAS !== null ? 'rolling-avg' : 'none',
+      periodsUsed: valid.length,
+      elasticity: null,
+      rSquared: null,
+    }
+  }
+
+  const logSpend = valid.map((r) => Math.log(r.cost))
+  const logRev   = valid.map((r) => Math.log(r.revenue))
+  const fit = ols(logSpend, logRev)
+
+  if (!fit) {
+    const fallbackIROAS = rolling14 ?? rolling28 ?? null
+    return {
+      marginalROAS: fallbackIROAS,
+      rolling14,
+      rolling28,
+      method: fallbackIROAS !== null ? 'rolling-avg' : 'none',
+      periodsUsed: valid.length,
+      elasticity: null,
+      rSquared: null,
+    }
+  }
+
+  // Marginal ROAS = b * (revenue / spend) at current spend
+  const currentROAS = current.cost > 0 ? current.revenue / current.cost : null
+  const marginalROAS = currentROAS !== null ? fit.slope * currentROAS : null
+
+  return {
+    marginalROAS,
+    rolling14,
+    rolling28,
+    method: 'power-curve',
+    periodsUsed: valid.length,
+    elasticity: fit.slope,
+    rSquared: fit.r2,
+  }
+}
+
+// Categorize a campaign.
+// Prefers marginalIROAS (power-curve derivative) over the raw two-point delta.
 function categorize(opts: {
-  incrementalRoas: number | null
+  incrementalRoas: number | null       // two-point delta fallback
+  marginalIROAS: number | null         // power-curve / rolling-avg estimate (preferred)
+  regressionMethod: 'power-curve' | 'rolling-avg' | 'none'
   currentRoas: number | null
   previousRoas: number | null
   currentSpend: number
@@ -170,7 +392,10 @@ function categorize(opts: {
   targetIncrementalRoas: number
   hasHistory: boolean
 }): { category: Category; reason: string } {
-  const { incrementalRoas, currentRoas, previousRoas, currentSpend, minimumSpend, targetIncrementalRoas, hasHistory } = opts
+  const {
+    incrementalRoas, marginalIROAS, regressionMethod,
+    currentRoas, previousRoas, currentSpend, minimumSpend, targetIncrementalRoas, hasHistory,
+  } = opts
 
   if (!hasHistory) {
     return { category: 'Monitor', reason: 'Only one period of data — no historical basis for comparison yet.' }
@@ -178,26 +403,36 @@ function categorize(opts: {
   if (currentSpend < minimumSpend) {
     return { category: 'Monitor', reason: 'Spend is below the minimum threshold — insufficient volume for reliable signal.' }
   }
-  if (incrementalRoas === null) {
+
+  // Use marginal iROAS from regression when available; fall back to two-point delta
+  const effectiveIROAS = marginalIROAS ?? incrementalRoas
+  const methodLabel =
+    regressionMethod === 'power-curve'
+      ? 'power-curve marginal iROAS'
+      : regressionMethod === 'rolling-avg'
+        ? 'rolling-average iROAS'
+        : 'period-over-period delta'
+
+  if (effectiveIROAS === null) {
     return { category: 'Monitor', reason: 'No incremental spend observed — unable to compute incremental ROAS.' }
   }
-  if (incrementalRoas <= 0) {
-    return { category: 'Reduce', reason: 'Incremental ROAS is zero or negative — additional spend is generating no returns.' }
+  if (effectiveIROAS <= 0) {
+    return { category: 'Reduce', reason: `${methodLabel} is zero or negative — additional spend is generating no returns.` }
   }
-  if (incrementalRoas >= targetIncrementalRoas * 1.05) {
-    return { category: 'Scale', reason: 'Incremental ROAS comfortably exceeds target — campaign has strong marginal returns.' }
+  if (effectiveIROAS >= targetIncrementalRoas * 1.05) {
+    return { category: 'Scale', reason: `${methodLabel} (${effectiveIROAS.toFixed(2)}x) comfortably exceeds target — campaign has strong marginal returns.` }
   }
-  if (incrementalRoas >= targetIncrementalRoas * 0.85) {
-    return { category: 'Maintain', reason: 'Incremental ROAS is close to target — campaign is performing at an efficient level.' }
+  if (effectiveIROAS >= targetIncrementalRoas * 0.85) {
+    return { category: 'Maintain', reason: `${methodLabel} (${effectiveIROAS.toFixed(2)}x) is close to target — campaign is performing at an efficient level.` }
   }
   if (
     currentRoas !== null &&
     previousRoas !== null &&
     Math.abs(currentRoas - previousRoas) <= targetIncrementalRoas * 0.1
   ) {
-    return { category: 'Maintain', reason: 'ROAS is stable period-over-period even though incremental ROAS is slightly below target.' }
+    return { category: 'Maintain', reason: `ROAS is stable period-over-period even though ${methodLabel} is slightly below target.` }
   }
-  return { category: 'Reduce', reason: 'Incremental ROAS is materially below target — efficiency is declining with more spend.' }
+  return { category: 'Reduce', reason: `${methodLabel} (${effectiveIROAS.toFixed(2)}x) is materially below target — efficiency is declining with more spend.` }
 }
 
 export function analyzeRows(
@@ -237,8 +472,11 @@ export function analyzeRows(
           ? (incrementalRevenue ?? 0) / incrementalSpend
           : null
 
+      // For analyzeRows (historical table), use simple delta — regression runs only in consolidateRows
       const { category, reason } = categorize({
         incrementalRoas,
+        marginalIROAS: null,
+        regressionMethod: 'none',
         currentRoas,
         previousRoas,
         currentSpend: row.cost,
@@ -300,6 +538,8 @@ export function consolidateRows(
   minimumSpend: number,
   reallocationPercentage: number,
   selectedPeriod?: string,
+  lastActionDates: Record<string, string> = {},
+  cadenceDays = 30,
 ): ConsolidatedRow[] {
   // Limit to rows up to and including the selected period
   const cutoff = selectedPeriod ? periodTime(selectedPeriod, mode) : Infinity
@@ -317,11 +557,15 @@ export function consolidateRows(
       (a, b) => periodTime(a.period, mode) - periodTime(b.period, mode),
     )
 
-    // The "current" period is either the selected one (if the campaign has data for it)
-    // or the campaign's most recent period within the cutoff
+    // Find the row for the selected period. If a period is explicitly selected
+    // and this campaign has no data for it, skip it — it was inactive that period.
     const latestIdx = selectedPeriod
       ? campaignRows.findLastIndex((r) => r.period === selectedPeriod)
       : -1
+
+    // When a period is selected, only include campaigns that actually ran that period.
+    if (selectedPeriod && latestIdx === -1) return
+
     const currentIdx = latestIdx !== -1 ? latestIdx : campaignRows.length - 1
     const latest = campaignRows[currentIdx]
     const previous = currentIdx > 0 ? campaignRows[currentIdx - 1] : null
@@ -365,12 +609,21 @@ export function consolidateRows(
         ? latestRoas - historicalAvgRoas
         : null
 
-    // Confidence: based on how many historical periods exist
-    const confidence: 'High' | 'Medium' | 'Low' =
-      historicalRows.length >= 4 ? 'High' : historicalRows.length >= 2 ? 'Medium' : 'Low'
+    // Power-curve regression (or rolling-avg fallback)
+    const regression = computeRegression(historicalRows, latest)
 
-    const { category, reason } = categorize({
+    // Confidence: regression method + history depth
+    const confidence: 'High' | 'Medium' | 'Low' =
+      regression.method === 'power-curve' && regression.rSquared !== null && regression.rSquared >= 0.7
+        ? 'High'
+        : regression.method === 'power-curve' || historicalRows.length >= 4
+          ? 'Medium'
+          : 'Low'
+
+    let { category, reason } = categorize({
       incrementalRoas,
+      marginalIROAS: regression.marginalROAS,
+      regressionMethod: regression.method,
       currentRoas: latestRoas,
       previousRoas: prevRoas,
       currentSpend: latest.cost,
@@ -379,6 +632,21 @@ export function consolidateRows(
       hasHistory: historicalRows.length > 0,
     })
 
+    // Apply cooldown: suppress Scale/Reduce if within decision-cadence window
+    const lastActionIso = lastActionDates[campaign] ?? null
+    let cooldownActive = false
+    let daysUntilNextReview: number | null = null
+    if (lastActionIso && (category === 'Scale' || category === 'Reduce')) {
+      const daysSince = Math.floor((Date.now() - new Date(lastActionIso).getTime()) / 86_400_000)
+      const remaining = cadenceDays - daysSince
+      if (remaining > 0) {
+        cooldownActive = true
+        daysUntilNextReview = remaining
+        category = 'Monitor'
+        reason = `Budget was last adjusted ${daysSince}d ago — next review in ${remaining} day${remaining !== 1 ? 's' : ''}.`
+      }
+    }
+
     const multiplier =
       category === 'Scale'
         ? 1 + reallocationPercentage / 100
@@ -386,6 +654,11 @@ export function consolidateRows(
           ? 1 - reallocationPercentage / 100
           : 1
     const recommendedSpend = latest.cost * multiplier
+
+    const daysInPeriod = getDaysInPeriod(latest.period, mode)
+    const avgDailySpend = latest.cost / daysInPeriod
+    const recommendedDailySpend = recommendedSpend / daysInPeriod
+    const dailySpendDelta = recommendedDailySpend - avgDailySpend
 
     results.push({
       campaign,
@@ -402,6 +675,18 @@ export function consolidateRows(
       incrementalSpend,
       incrementalRevenue,
       incrementalRoas,
+      marginaliROAS: regression.marginalROAS,
+      rolling14iROAS: regression.rolling14,
+      rolling28iROAS: regression.rolling28,
+      regressionMethod: regression.method,
+      regressionPeriods: regression.periodsUsed,
+      daysInPeriod,
+      avgDailySpend,
+      recommendedDailySpend,
+      dailySpendDelta,
+      lastActionDate: lastActionIso,
+      cooldownActive,
+      daysUntilNextReview,
       category,
       reason,
       recommendedSpend,
