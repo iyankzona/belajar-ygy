@@ -3,6 +3,7 @@
 import { Fragment, useState } from 'react'
 import type { Category, ConsolidatedRow, DecisionCadence, ViewMode } from '@/lib/roas'
 import { CADENCE_DAYS, CATEGORY_COLORS, formatCurrency, formatPct, formatRoas } from '@/lib/roas'
+import { PowerCurveChart } from '@/components/PowerCurveChart'
 
 // ---------------------------------------------------------------------------
 // Tiny reusable pieces
@@ -514,6 +515,14 @@ export function RecommendationPanel({
                                   }
                                 />
                               </div>
+
+                              {/* Power-curve chart */}
+                              <PowerCurveChart
+                                chartPoints={row.chartPoints}
+                                regressionCoeffs={row.regressionCoeffs}
+                                marginaliROAS={row.marginaliROAS}
+                                regressionMethod={row.regressionMethod}
+                              />
                             </div>
 
                             {/* Divider */}

@@ -55,6 +55,9 @@ export type ConsolidatedRow = {
   rolling28iROAS: number | null      // iROAS over the trailing 4 periods (approx 28 days)
   regressionMethod: 'power-curve' | 'rolling-avg' | 'none'
   regressionPeriods: number          // how many periods were used in the regression
+  regressionCoeffs: { a: number; b: number } | null  // power-curve params: revenue = a * spend^b
+  // raw spend/revenue pairs for the chart — includes all historical + current period
+  chartPoints: { spend: number; revenue: number; period: string; isCurrent: boolean }[]
   // daily spend breakdown
   daysInPeriod: number          // 7 for weekly, days-in-month for monthly
   avgDailySpend: number         // latestSpend / daysInPeriod
@@ -263,11 +266,12 @@ export type RegressionResult = {
   method: 'power-curve' | 'rolling-avg' | 'none'
   periodsUsed: number
   elasticity: number | null  // b coefficient — the spend elasticity
+  intercept: number | null   // OLS intercept in log space; a = exp(intercept)
   rSquared: number | null
 }
 
-const MIN_REGRESSION_PERIODS = 6
-const MAX_REGRESSION_PERIODS = 12
+export const MIN_REGRESSION_PERIODS = 6
+export const MAX_REGRESSION_PERIODS = 12
 
 /**
  * Computes simple OLS slope for y ~ a + b*x, returning { slope, intercept, r2 }.
@@ -319,31 +323,21 @@ export function computeRegression(historicalRows: RawRow[], current: RawRow): Re
   const n = regressionPool.length
 
   if (n < MIN_REGRESSION_PERIODS) {
-    // Not enough history — fall back to simple rolling average delta
     const fallbackIROAS = rolling14 ?? rolling28 ?? null
     return {
-      marginalROAS: fallbackIROAS,
-      rolling14,
-      rolling28,
+      marginalROAS: fallbackIROAS, rolling14, rolling28,
       method: fallbackIROAS !== null ? 'rolling-avg' : 'none',
-      periodsUsed: n,
-      elasticity: null,
-      rSquared: null,
+      periodsUsed: n, elasticity: null, intercept: null, rSquared: null,
     }
   }
 
-  // Filter out zero-spend or zero-revenue rows (log is undefined there)
   const valid = regressionPool.filter((r) => r.cost > 0 && r.revenue > 0)
   if (valid.length < MIN_REGRESSION_PERIODS) {
     const fallbackIROAS = rolling14 ?? rolling28 ?? null
     return {
-      marginalROAS: fallbackIROAS,
-      rolling14,
-      rolling28,
+      marginalROAS: fallbackIROAS, rolling14, rolling28,
       method: fallbackIROAS !== null ? 'rolling-avg' : 'none',
-      periodsUsed: valid.length,
-      elasticity: null,
-      rSquared: null,
+      periodsUsed: valid.length, elasticity: null, intercept: null, rSquared: null,
     }
   }
 
@@ -354,27 +348,21 @@ export function computeRegression(historicalRows: RawRow[], current: RawRow): Re
   if (!fit) {
     const fallbackIROAS = rolling14 ?? rolling28 ?? null
     return {
-      marginalROAS: fallbackIROAS,
-      rolling14,
-      rolling28,
+      marginalROAS: fallbackIROAS, rolling14, rolling28,
       method: fallbackIROAS !== null ? 'rolling-avg' : 'none',
-      periodsUsed: valid.length,
-      elasticity: null,
-      rSquared: null,
+      periodsUsed: valid.length, elasticity: null, intercept: null, rSquared: null,
     }
   }
 
-  // Marginal ROAS = b * (revenue / spend) at current spend
   const currentROAS = current.cost > 0 ? current.revenue / current.cost : null
   const marginalROAS = currentROAS !== null ? fit.slope * currentROAS : null
 
   return {
-    marginalROAS,
-    rolling14,
-    rolling28,
+    marginalROAS, rolling14, rolling28,
     method: 'power-curve',
     periodsUsed: valid.length,
     elasticity: fit.slope,
+    intercept: fit.intercept,
     rSquared: fit.r2,
   }
 }
@@ -680,6 +668,20 @@ export function consolidateRows(
       rolling28iROAS: regression.rolling28,
       regressionMethod: regression.method,
       regressionPeriods: regression.periodsUsed,
+      regressionCoeffs:
+        regression.method === 'power-curve' &&
+        regression.elasticity !== null &&
+        regression.intercept !== null
+          ? { a: Math.exp(regression.intercept), b: regression.elasticity }
+          : null,
+      chartPoints: [...historicalRows, latest]
+        .slice(-MAX_REGRESSION_PERIODS)
+        .map((r) => ({
+          spend: r.cost,
+          revenue: r.revenue,
+          period: r.period,
+          isCurrent: r === latest,
+        })),
       daysInPeriod,
       avgDailySpend,
       recommendedDailySpend,
