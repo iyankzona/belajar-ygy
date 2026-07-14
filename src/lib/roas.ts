@@ -64,6 +64,8 @@ export type ConsolidatedRow = {
   avgDailySpend: number         // latestSpend / daysInPeriod
   recommendedDailySpend: number // recommendedSpend / daysInPeriod
   dailySpendDelta: number       // recommendedDailySpend - avgDailySpend
+  // suppression flags (set before category/recommendation are finalised)
+  belowThreshold: boolean           // true if spend is below the minimum threshold
   // decision cadence / cooldown
   lastActionDate: string | null     // ISO date of last recorded action, if any
   cooldownActive: boolean           // true if within the cadence cooldown window
@@ -611,10 +613,9 @@ export function consolidateRows(
     // Power-curve regression (or rolling-avg fallback)
     const regression = computeRegression(historicalRows, latest)
 
-    // Confidence: combine regression method, R², and period count
-    // High:   power-curve AND R² >= 0.70
-    // Medium: power-curve AND 0.40 <= R² < 0.70, or rolling-avg with 4+ periods
-    // Low:    power-curve AND R² < 0.40, rolling-avg with <4 periods, or no signal
+    // Confidence: combine regression method, R², and period count.
+    // For rolling-avg (< MIN_REGRESSION_PERIODS total), always Low — same threshold as the
+    // regression fallback itself, so the two checks are always in sync.
     const r2 = regression.rSquared
     const confidence: 'High' | 'Medium' | 'Low' =
       regression.method === 'power-curve' && r2 !== null && r2 >= 0.7
@@ -623,21 +624,30 @@ export function consolidateRows(
           ? 'Medium'
           : regression.method === 'power-curve' && (r2 === null || r2 < 0.4)
             ? 'Low'
-            : historicalRows.length >= 4
+            // rolling-avg or none: Low unless we have at least MIN_REGRESSION_PERIODS total periods
+            : regression.periodsUsed >= MIN_REGRESSION_PERIODS
               ? 'Medium'
               : 'Low'
 
-    let { category, reason } = categorize({
-      incrementalRoas,
-      marginalIROAS: regression.marginalROAS,
-      regressionMethod: regression.method,
-      currentRoas: latestRoas,
-      previousRoas: prevRoas,
-      currentSpend: latest.cost,
-      minimumSpend,
-      targetIncrementalRoas,
-      hasHistory: historicalRows.length > 0,
-    })
+    // ── Below-threshold check (runs before categorize, before all other gates) ──
+    const belowThreshold = latest.cost < minimumSpend
+
+    let { category, reason } = belowThreshold
+      ? {
+          category: 'Monitor' as const,
+          reason: `Spend (${formatCurrency(latest.cost)}) is below the minimum threshold (${formatCurrency(minimumSpend)}) — insufficient volume for reliable signal.`,
+        }
+      : categorize({
+          incrementalRoas,
+          marginalIROAS: regression.marginalROAS,
+          regressionMethod: regression.method,
+          currentRoas: latestRoas,
+          previousRoas: prevRoas,
+          currentSpend: latest.cost,
+          minimumSpend,
+          targetIncrementalRoas,
+          hasHistory: historicalRows.length > 0,
+        })
 
     // ── SBEC / excluded campaigns: always Monitor, no budget action ──
     if (excluded && (category === 'Scale' || category === 'Reduce' || category === 'Maintain')) {
@@ -656,7 +666,7 @@ export function consolidateRows(
     if (confidence === 'Low' && (category === 'Scale' || category === 'Reduce')) {
       const r2Label = r2 !== null ? ` (R² ${r2.toFixed(2)})` : ''
       category = 'Monitor'
-      reason = `Insufficient regression reliability${r2Label} — curve fit too weak to act on. Gather more history before acting.`
+      reason = `Insufficient regression reliability${r2Label} — fewer than ${MIN_REGRESSION_PERIODS} periods available. Gather more history before acting.`
     }
 
     // ── Cooldown: suppress Scale/Reduce if within decision-cadence window ──
@@ -702,9 +712,11 @@ export function consolidateRows(
     } else if (category === 'Maintain') {
       recommendation = 'Keep budget unchanged'
     } else {
-      recommendation = excluded
-        ? 'Excluded from budget action (SBEC) — monitor only'
-        : 'Gather more data before acting'
+      recommendation = belowThreshold
+        ? `Below spend threshold (${formatCurrency(minimumSpend)}) — monitor only`
+        : excluded
+          ? 'Excluded from budget action (SBEC) — monitor only'
+          : 'Gather more data before acting'
     }
 
     results.push({
@@ -746,6 +758,7 @@ export function consolidateRows(
       avgDailySpend,
       recommendedDailySpend,
       dailySpendDelta,
+      belowThreshold,
       lastActionDate: lastActionIso,
       cooldownActive,
       daysUntilNextReview,

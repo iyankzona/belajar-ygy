@@ -378,6 +378,15 @@ export function RecommendationPanel({
                               </span>
                             </p>
                           </div>
+                        ) : row.belowThreshold ? (
+                          <div>
+                            <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold border bg-surface-2 border-border text-muted">
+                              Monitor (threshold)
+                            </span>
+                            <p className="text-[11px] text-muted mt-1 leading-relaxed max-w-[200px]">
+                              Below minimum spend — no action
+                            </p>
+                          </div>
                         ) : row.category === 'Monitor' && row.confidence === 'Low' ? (
                           <div>
                             <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold border bg-surface-2 border-border text-muted">
@@ -389,7 +398,7 @@ export function RecommendationPanel({
                                 : 'Insufficient data for reliable signal'}
                             </p>
                           </div>
-                        ) : row.category === 'Monitor' && row.recommendation.includes('Excluded') ? (
+                        ) : row.category === 'Monitor' && row.recommendation.includes('SBEC') ? (
                           <div>
                             <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold border bg-surface-2 border-border text-muted">
                               Monitor (excluded)
