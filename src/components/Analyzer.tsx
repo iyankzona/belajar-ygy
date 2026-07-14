@@ -237,8 +237,12 @@ export function Analyzer() {
   )
 
   const consolidatedRows = useMemo(
-    () => consolidateRows(sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod ?? undefined, lastActionDates, CADENCE_DAYS[decisionCadence]),
-    [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod, lastActionDates, decisionCadence],
+    () => consolidateRows(
+      sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage,
+      selectedPeriod ?? undefined, lastActionDates, CADENCE_DAYS[decisionCadence],
+      weeklyRows,  // single-source weekly rows for the power-curve fit
+    ),
+    [sourceRows, view, targetIncrementalRoas, minimumSpend, reallocationPercentage, selectedPeriod, lastActionDates, decisionCadence, weeklyRows],
   )
 
   const handleAction = (campaign: string) => {

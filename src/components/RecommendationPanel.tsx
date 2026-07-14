@@ -493,6 +493,17 @@ export function RecommendationPanel({
                                     rolling-avg fallback · {row.regressionPeriods} periods
                                   </span>
                                 )}
+                                {row.curveValidation && (
+                                  <span className={`ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border normal-case tracking-normal ${
+                                    row.curveValidation.avgAbsErrPct !== null && row.curveValidation.avgAbsErrPct <= 10
+                                      ? 'bg-scale-bg text-scale border-scale/30'
+                                      : row.curveValidation.avgAbsErrPct !== null && row.curveValidation.avgAbsErrPct <= 25
+                                        ? 'bg-maintain-bg text-maintain border-maintain/30'
+                                        : 'bg-monitor-bg text-monitor border-monitor/30'
+                                  }`}>
+                                    validation: {row.curveValidation.avgAbsErrPct !== null ? `avg ${row.curveValidation.avgAbsErrPct.toFixed(0)}% err` : 'n/a'} · {row.curveValidation.monthsChecked}mo
+                                  </span>
+                                )}
                                 {row.regressionMethod === 'none' && (
                                   <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-surface-2 text-muted border border-border normal-case tracking-normal">
                                     insufficient data

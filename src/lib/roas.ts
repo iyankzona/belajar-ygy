@@ -59,6 +59,12 @@ export type ConsolidatedRow = {
   regressionCoeffs: { a: number; b: number } | null  // power-curve params: revenue = a * spend^b
   // raw spend/revenue pairs for the chart — includes all historical + current period
   chartPoints: { spend: number; revenue: number; period: string; isCurrent: boolean }[]
+  // holdout validation: how well the weekly-fitted curve predicts held-out monthly totals
+  curveValidation: {
+    monthsChecked: number             // number of completed calendar months tested
+    avgAbsErrPct: number | null       // mean absolute % error across those months
+    maxAbsErrPct: number | null       // worst-case monthly miss
+  } | null
   // daily spend breakdown
   daysInPeriod: number          // 7 for weekly, days-in-month for monthly
   avgDailySpend: number         // latestSpend / daysInPeriod
@@ -315,58 +321,143 @@ function rollingDeltaIROAS(historicalRows: RawRow[], current: RawRow, windowPeri
   return deltaRevenue / deltaSpend
 }
 
+// ─── Single-source weekly power-curve fit ────────────────────────────────────
+// The curve is fit ONCE on all available weekly rows for a campaign (up to
+// MAX_REGRESSION_PERIODS most-recent). The fitted coefficients are then
+// evaluated at any spend level — weekly, biweekly, monthly — so every cadence
+// sees the same elasticity (b) and R², never an independently-refitted curve.
+
+export type FitResult = {
+  a: number         // revenue = a * spend^b
+  b: number         // elasticity coefficient
+  rSquared: number
+  periodsUsed: number
+}
+
+/**
+ * Fits log(revenue) ~ a + b*log(spend) against up to MAX_REGRESSION_PERIODS
+ * valid weekly rows.  Returns null when fewer than MIN_REGRESSION_PERIODS
+ * valid rows are available.
+ */
+export function fitPowerCurve(weeklyRows: RawRow[]): FitResult | null {
+  const pool = weeklyRows
+    .filter((r) => r.cost > 0 && r.revenue > 0)
+    .slice(-MAX_REGRESSION_PERIODS)
+
+  if (pool.length < MIN_REGRESSION_PERIODS) return null
+
+  const logSpend = pool.map((r) => Math.log(r.cost))
+  const logRev   = pool.map((r) => Math.log(r.revenue))
+  const fit = ols(logSpend, logRev)
+  if (!fit) return null
+
+  return {
+    a: Math.exp(fit.intercept),
+    b: fit.slope,
+    rSquared: fit.r2,
+    periodsUsed: pool.length,
+  }
+}
+
+/**
+ * Evaluates the derivative of the power curve at a given spend level.
+ * Marginal ROAS = b × (predicted revenue / spend) = b × (a × spend^(b-1)).
+ */
+export function evaluateCurveAtSpend(fit: FitResult, spend: number): number | null {
+  if (spend <= 0) return null
+  // predicted revenue at this spend
+  const predictedRevenue = fit.a * Math.pow(spend, fit.b)
+  // derivative: d(revenue)/d(spend) = b * a * spend^(b-1) = b * predictedRevenue / spend
+  return fit.b * predictedRevenue / spend
+}
+
+/**
+ * Holdout validation: group the campaign's weekly rows by calendar month,
+ * then for each completed month compute predicted revenue (sum of weekly
+ * predicted revenues using the fitted curve) vs actual revenue (sum of weekly
+ * actuals).  Returns per-month errors and aggregate stats.
+ *
+ * Only months where ALL weeks are present (i.e. the month is "complete" in
+ * the dataset) are included — partial months at the edges are excluded.
+ */
+export function computeHoldoutValidation(
+  weeklyRows: RawRow[],
+  fit: FitResult,
+): ConsolidatedRow['curveValidation'] {
+  if (weeklyRows.length === 0) return null
+
+  // Group rows into YYYY-MM buckets using the start date of the period label
+  const byMonth = new Map<string, RawRow[]>()
+  for (const row of weeklyRows) {
+    const startStr = row.period.split(/\s*[-–]\s*/)[0].trim()
+    const d = new Date(startStr)
+    if (isNaN(d.getTime())) continue
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    const arr = byMonth.get(key) ?? []
+    arr.push(row)
+    byMonth.set(key, arr)
+  }
+
+  // Determine the first and last months — exclude the last calendar month if
+  // the dataset doesn't reach its natural end (i.e. it may still be partial).
+  const months = Array.from(byMonth.keys()).sort()
+  if (months.length < 2) return null   // need at least 2 months to validate
+
+  // Drop the last month — it may be incomplete (still in progress)
+  const validMonths = months.slice(0, -1)
+
+  const errors: number[] = []
+  for (const month of validMonths) {
+    const rows = byMonth.get(month)!
+    const actualRevenue = rows.reduce((s, r) => s + r.revenue, 0)
+    const predictedRevenue = rows.reduce((s, r) => {
+      const pred = fit.a * Math.pow(r.cost, fit.b)
+      return s + pred
+    }, 0)
+    if (actualRevenue === 0) continue
+    const absErrPct = Math.abs((predictedRevenue - actualRevenue) / actualRevenue) * 100
+    errors.push(absErrPct)
+  }
+
+  if (errors.length === 0) return null
+
+  const avgAbsErrPct = errors.reduce((s, v) => s + v, 0) / errors.length
+  const maxAbsErrPct = Math.max(...errors)
+
+  return { monthsChecked: errors.length, avgAbsErrPct, maxAbsErrPct }
+}
+
+/**
+ * Legacy compatibility wrapper used by analyzeRows (per-period historical table).
+ * Fits the curve on the rows available at that point and evaluates at `current`.
+ */
 export function computeRegression(historicalRows: RawRow[], current: RawRow): RegressionResult {
   // Rolling window iROAS (always computed when possible)
   const rolling14 = rollingDeltaIROAS(historicalRows, current, 2)
   const rolling28 = rollingDeltaIROAS(historicalRows, current, 4)
 
-  // Determine how many periods to use for regression (up to MAX, at least MIN)
   const allRows = [...historicalRows, current]
-  const regressionPool = allRows.slice(-MAX_REGRESSION_PERIODS)
-  const n = regressionPool.length
-
-  if (n < MIN_REGRESSION_PERIODS) {
-    const fallbackIROAS = rolling14 ?? rolling28 ?? null
-    return {
-      marginalROAS: fallbackIROAS, rolling14, rolling28,
-      method: fallbackIROAS !== null ? 'rolling-avg' : 'none',
-      periodsUsed: n, elasticity: null, intercept: null, rSquared: null,
-    }
-  }
-
-  const valid = regressionPool.filter((r) => r.cost > 0 && r.revenue > 0)
-  if (valid.length < MIN_REGRESSION_PERIODS) {
-    const fallbackIROAS = rolling14 ?? rolling28 ?? null
-    return {
-      marginalROAS: fallbackIROAS, rolling14, rolling28,
-      method: fallbackIROAS !== null ? 'rolling-avg' : 'none',
-      periodsUsed: valid.length, elasticity: null, intercept: null, rSquared: null,
-    }
-  }
-
-  const logSpend = valid.map((r) => Math.log(r.cost))
-  const logRev   = valid.map((r) => Math.log(r.revenue))
-  const fit = ols(logSpend, logRev)
+  const fit = fitPowerCurve(allRows)
 
   if (!fit) {
     const fallbackIROAS = rolling14 ?? rolling28 ?? null
     return {
       marginalROAS: fallbackIROAS, rolling14, rolling28,
       method: fallbackIROAS !== null ? 'rolling-avg' : 'none',
-      periodsUsed: valid.length, elasticity: null, intercept: null, rSquared: null,
+      periodsUsed: allRows.filter((r) => r.cost > 0 && r.revenue > 0).length,
+      elasticity: null, intercept: null, rSquared: null,
     }
   }
 
-  const currentROAS = current.cost > 0 ? current.revenue / current.cost : null
-  const marginalROAS = currentROAS !== null ? fit.slope * currentROAS : null
+  const marginalROAS = evaluateCurveAtSpend(fit, current.cost)
 
   return {
     marginalROAS, rolling14, rolling28,
     method: 'power-curve',
-    periodsUsed: valid.length,
-    elasticity: fit.slope,
-    intercept: fit.intercept,
-    rSquared: fit.r2,
+    periodsUsed: fit.periodsUsed,
+    elasticity: fit.b,
+    intercept: Math.log(fit.a),  // store back in log space for compatibility
+    rSquared: fit.rSquared,
   }
 }
 
@@ -538,7 +629,19 @@ export function consolidateRows(
   selectedPeriod?: string,
   lastActionDates: Record<string, string> = {},
   cadenceDays = 30,
+  // Raw weekly rows — used for the single-source power-curve fit and holdout validation.
+  // For Weekly mode this equals `rows`; for Biweekly/Monthly the caller passes the
+  // original weekly rows so the curve is always fit at weekly grain.
+  allWeeklyRows: RawRow[] = rows,
 ): ConsolidatedRow[] {
+  // Pre-group weekly rows by campaign for fast lookup
+  const weeklyByCampaign = new Map<string, RawRow[]>()
+  for (const row of allWeeklyRows) {
+    const arr = weeklyByCampaign.get(row.campaign) ?? []
+    arr.push(row)
+    weeklyByCampaign.set(row.campaign, arr)
+  }
+
   // Limit to rows up to and including the selected period
   const cutoff = selectedPeriod ? periodTime(selectedPeriod, mode) : Infinity
   const filteredRows = rows.filter((r) => periodTime(r.period, mode) <= cutoff)
@@ -610,22 +713,43 @@ export function consolidateRows(
         ? latestRoas - historicalAvgRoas
         : null
 
-    // Power-curve regression (or rolling-avg fallback)
-    const regression = computeRegression(historicalRows, latest)
+    // ── Single-source weekly curve fit ──────────────────────────────────────
+    // Always fit on weekly grain regardless of current view mode (weekly/biweekly/monthly).
+    // R², confidence, and elasticity (b) are stable single values independent of cadence.
+    const campaignWeeklyRows = (weeklyByCampaign.get(campaign) ?? [])
+      .filter((r) => r.cost > 0 && r.revenue > 0)
+      .sort((a, b) => periodTime(a.period, 'weekly') - periodTime(b.period, 'weekly'))
 
-    // Confidence: combine regression method, R², and period count.
-    // For rolling-avg (< MIN_REGRESSION_PERIODS total), always Low — same threshold as the
-    // regression fallback itself, so the two checks are always in sync.
-    const r2 = regression.rSquared
+    const weeklyFit = fitPowerCurve(campaignWeeklyRows)
+
+    // Rolling window iROAS uses the cadence-native historicalRows (for the delta signals)
+    const rolling14 = rollingDeltaIROAS(historicalRows, latest, 2)
+    const rolling28 = rollingDeltaIROAS(historicalRows, latest, 4)
+
+    // Marginal iROAS: evaluate the weekly-fitted curve at the current cadence's spend level.
+    // For biweekly/monthly, `latest.cost` already holds the aggregated spend for that period.
+    const marginalROAS = weeklyFit ? evaluateCurveAtSpend(weeklyFit, latest.cost) : null
+
+    // Fallback: rolling-avg delta if no curve available
+    const fallbackIROAS = marginalROAS ?? rolling14 ?? rolling28 ?? null
+    const regressionMethod: 'power-curve' | 'rolling-avg' | 'none' =
+      weeklyFit ? 'power-curve' : fallbackIROAS !== null ? 'rolling-avg' : 'none'
+
+    // Holdout validation — always based on weekly rows, same for all cadences
+    const curveValidation = weeklyFit
+      ? computeHoldoutValidation(campaignWeeklyRows, weeklyFit)
+      : null
+
+    // Confidence: from the weekly fit's R² — same value for all cadences of this campaign.
+    const r2 = weeklyFit?.rSquared ?? null
     const confidence: 'High' | 'Medium' | 'Low' =
-      regression.method === 'power-curve' && r2 !== null && r2 >= 0.7
+      weeklyFit && r2 !== null && r2 >= 0.7
         ? 'High'
-        : regression.method === 'power-curve' && r2 !== null && r2 >= 0.4
+        : weeklyFit && r2 !== null && r2 >= 0.4
           ? 'Medium'
-          : regression.method === 'power-curve' && (r2 === null || r2 < 0.4)
+          : weeklyFit && (r2 === null || r2 < 0.4)
             ? 'Low'
-            // rolling-avg or none: Low unless we have at least MIN_REGRESSION_PERIODS total periods
-            : regression.periodsUsed >= MIN_REGRESSION_PERIODS
+            : campaignWeeklyRows.length >= MIN_REGRESSION_PERIODS
               ? 'Medium'
               : 'Low'
 
@@ -639,8 +763,8 @@ export function consolidateRows(
         }
       : categorize({
           incrementalRoas,
-          marginalIROAS: regression.marginalROAS,
-          regressionMethod: regression.method,
+          marginalIROAS: marginalROAS ?? fallbackIROAS,
+          regressionMethod,
           currentRoas: latestRoas,
           previousRoas: prevRoas,
           currentSpend: latest.cost,
@@ -734,26 +858,25 @@ export function consolidateRows(
       incrementalSpend,
       incrementalRevenue,
       incrementalRoas,
-      marginaliROAS: regression.marginalROAS,
-      rolling14iROAS: regression.rolling14,
-      rolling28iROAS: regression.rolling28,
-      regressionMethod: regression.method,
-      regressionPeriods: regression.periodsUsed,
-      regressionRSquared: regression.rSquared,
-      regressionCoeffs:
-        regression.method === 'power-curve' &&
-        regression.elasticity !== null &&
-        regression.intercept !== null
-          ? { a: Math.exp(regression.intercept), b: regression.elasticity }
-          : null,
-      chartPoints: [...historicalRows, latest]
+      marginaliROAS: marginalROAS ?? (regressionMethod !== 'none' ? fallbackIROAS : null),
+      rolling14iROAS: rolling14,
+      rolling28iROAS: rolling28,
+      regressionMethod,
+      regressionPeriods: weeklyFit?.periodsUsed ?? campaignWeeklyRows.length,
+      regressionRSquared: r2,
+      regressionCoeffs: weeklyFit ? { a: weeklyFit.a, b: weeklyFit.b } : null,
+      // Chart points use the weekly rows for the scatter (shows the raw fitting data)
+      chartPoints: campaignWeeklyRows
         .slice(-MAX_REGRESSION_PERIODS)
         .map((r) => ({
           spend: r.cost,
           revenue: r.revenue,
           period: r.period,
-          isCurrent: r === latest,
+          // Mark as current only for weekly view; for other views the cadence aggregation
+          // means there is no single weekly "current" point — highlight nothing.
+          isCurrent: mode === 'weekly' && r === campaignWeeklyRows[campaignWeeklyRows.length - 1],
         })),
+      curveValidation,
       daysInPeriod,
       avgDailySpend,
       recommendedDailySpend,
