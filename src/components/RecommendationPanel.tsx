@@ -378,14 +378,36 @@ export function RecommendationPanel({
                               </span>
                             </p>
                           </div>
+                        ) : row.category === 'Monitor' && row.confidence === 'Low' ? (
+                          <div>
+                            <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold border bg-surface-2 border-border text-muted">
+                              Monitor
+                            </span>
+                            <p className="text-[11px] text-muted mt-1 leading-relaxed max-w-[200px]">
+                              {row.regressionRSquared !== null
+                                ? `Low reliability — R² ${row.regressionRSquared.toFixed(2)}`
+                                : 'Insufficient data for reliable signal'}
+                            </p>
+                          </div>
+                        ) : row.category === 'Monitor' && row.recommendation.includes('Excluded') ? (
+                          <div>
+                            <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold border bg-surface-2 border-border text-muted">
+                              Monitor (excluded)
+                            </span>
+                            <p className="text-[11px] text-muted mt-1 leading-relaxed max-w-[200px]">
+                              SBEC — no budget action
+                            </p>
+                          </div>
                         ) : (
                           <div>
                             <span
                               className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border ${CATEGORY_CHIP[row.category]}`}
                             >
-                              {row.category}
+                              {row.confidence === 'Medium' && (row.category === 'Scale' || row.category === 'Reduce')
+                                ? `${row.category} ~`
+                                : row.category}
                             </span>
-                            <p className="text-[11px] text-muted mt-1 leading-relaxed max-w-[180px]">
+                            <p className="text-[11px] text-muted mt-1 leading-relaxed max-w-[200px]">
                               {row.recommendation}
                             </p>
                           </div>

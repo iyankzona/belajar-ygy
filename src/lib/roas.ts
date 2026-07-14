@@ -516,6 +516,13 @@ export function analyzeRows(
   )
 }
 
+// Campaigns matching these patterns are always Monitor-only — no budget action ever generated.
+const EXCLUDED_CAMPAIGN_PATTERNS = [/\bSBEC\b/i]
+
+function isCampaignExcluded(name: string): boolean {
+  return EXCLUDED_CAMPAIGN_PATTERNS.some((re) => re.test(name))
+}
+
 // ─── Consolidated recommendations ────────────────────────────────────────────
 // Produces one row per campaign based on the latest period and ALL historical
 // periods as context.
@@ -545,6 +552,9 @@ export function consolidateRows(
     campaignRows.sort(
       (a, b) => periodTime(a.period, mode) - periodTime(b.period, mode),
     )
+
+    // Campaigns excluded from budget-action logic (e.g. SBEC) are always Monitor-only.
+    const excluded = isCampaignExcluded(campaign)
 
     // Find the row for the selected period. If a period is explicitly selected
     // and this campaign has no data for it, skip it — it was inactive that period.
@@ -629,7 +639,27 @@ export function consolidateRows(
       hasHistory: historicalRows.length > 0,
     })
 
-    // Apply cooldown: suppress Scale/Reduce if within decision-cadence window
+    // ── SBEC / excluded campaigns: always Monitor, no budget action ──
+    if (excluded && (category === 'Scale' || category === 'Reduce' || category === 'Maintain')) {
+      category = 'Monitor'
+      reason = 'Campaign is excluded from budget-action logic (SBEC) — monitor-only.'
+    }
+
+    // ── Confidence gating: Low confidence suppresses specific budget actions ──
+    // Medium: keep Scale/Reduce pill but soften to half the reallocation %, flag in reason.
+    // Low:    force Monitor regardless of what the curve says — the fit is too unreliable.
+    const scaledReallocationPct =
+      confidence === 'Medium' && (category === 'Scale' || category === 'Reduce')
+        ? reallocationPercentage / 2
+        : reallocationPercentage
+
+    if (confidence === 'Low' && (category === 'Scale' || category === 'Reduce')) {
+      const r2Label = r2 !== null ? ` (R² ${r2.toFixed(2)})` : ''
+      category = 'Monitor'
+      reason = `Insufficient regression reliability${r2Label} — curve fit too weak to act on. Gather more history before acting.`
+    }
+
+    // ── Cooldown: suppress Scale/Reduce if within decision-cadence window ──
     const lastActionIso = lastActionDates[campaign] ?? null
     let cooldownActive = false
     let daysUntilNextReview: number | null = null
@@ -646,9 +676,9 @@ export function consolidateRows(
 
     const multiplier =
       category === 'Scale'
-        ? 1 + reallocationPercentage / 100
+        ? 1 + scaledReallocationPct / 100
         : category === 'Reduce'
-          ? 1 - reallocationPercentage / 100
+          ? 1 - scaledReallocationPct / 100
           : 1
     const recommendedSpend = latest.cost * multiplier
 
@@ -656,6 +686,26 @@ export function consolidateRows(
     const avgDailySpend = latest.cost / daysInPeriod
     const recommendedDailySpend = recommendedSpend / daysInPeriod
     const dailySpendDelta = recommendedDailySpend - avgDailySpend
+
+    // Build recommendation string — reflect softened % for Medium, no figure for Monitor
+    let recommendation: string
+    if (category === 'Scale') {
+      recommendation =
+        confidence === 'Medium'
+          ? `Scale (moderate confidence) — consider a smaller test increase of ${scaledReallocationPct}% to ${formatCurrency(recommendedSpend)}`
+          : `Increase budget by ${scaledReallocationPct}% to ${formatCurrency(recommendedSpend)}`
+    } else if (category === 'Reduce') {
+      recommendation =
+        confidence === 'Medium'
+          ? `Reduce (moderate confidence) — consider a smaller decrease of ${scaledReallocationPct}% to ${formatCurrency(recommendedSpend)}`
+          : `Decrease budget by ${scaledReallocationPct}% to ${formatCurrency(recommendedSpend)}`
+    } else if (category === 'Maintain') {
+      recommendation = 'Keep budget unchanged'
+    } else {
+      recommendation = excluded
+        ? 'Excluded from budget action (SBEC) — monitor only'
+        : 'Gather more data before acting'
+    }
 
     results.push({
       campaign,
@@ -702,14 +752,7 @@ export function consolidateRows(
       category,
       reason,
       recommendedSpend,
-      recommendation:
-        category === 'Scale'
-          ? `Increase budget by ${reallocationPercentage}% to ${formatCurrency(recommendedSpend)}`
-          : category === 'Reduce'
-            ? `Decrease budget by ${reallocationPercentage}% to ${formatCurrency(recommendedSpend)}`
-            : category === 'Maintain'
-              ? 'Keep budget unchanged'
-              : 'Gather more data before acting',
+      recommendation,
       confidence,
     })
   })
