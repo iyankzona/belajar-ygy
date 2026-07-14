@@ -601,13 +601,21 @@ export function consolidateRows(
     // Power-curve regression (or rolling-avg fallback)
     const regression = computeRegression(historicalRows, latest)
 
-    // Confidence: regression method + history depth
+    // Confidence: combine regression method, R², and period count
+    // High:   power-curve AND R² >= 0.70
+    // Medium: power-curve AND 0.40 <= R² < 0.70, or rolling-avg with 4+ periods
+    // Low:    power-curve AND R² < 0.40, rolling-avg with <4 periods, or no signal
+    const r2 = regression.rSquared
     const confidence: 'High' | 'Medium' | 'Low' =
-      regression.method === 'power-curve' && regression.rSquared !== null && regression.rSquared >= 0.7
+      regression.method === 'power-curve' && r2 !== null && r2 >= 0.7
         ? 'High'
-        : regression.method === 'power-curve' || historicalRows.length >= 4
+        : regression.method === 'power-curve' && r2 !== null && r2 >= 0.4
           ? 'Medium'
-          : 'Low'
+          : regression.method === 'power-curve' && (r2 === null || r2 < 0.4)
+            ? 'Low'
+            : historicalRows.length >= 4
+              ? 'Medium'
+              : 'Low'
 
     let { category, reason } = categorize({
       incrementalRoas,

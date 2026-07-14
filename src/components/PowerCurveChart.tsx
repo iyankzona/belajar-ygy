@@ -106,27 +106,27 @@ export function PowerCurveChart({ chartPoints, regressionCoeffs, marginaliROAS, 
             order: 1,
           }]
         : []),
-      // 3. Fitted power curve
+      // 3. Fitted power curve — must use type:'line' so Chart.js actually draws the line
       ...(hasCurve
         ? [{
+            type: 'line' as const,
             label: 'Power curve fit',
             data: curvePoints,
-            showLine: true,
-            borderColor: `${GREEN}cc`,
+            borderColor: GREEN,
             backgroundColor: 'transparent',
-            borderWidth: 2,
+            borderWidth: 2.5,
             pointRadius: 0,
-            tension: 0.3,
+            tension: 0,
             order: 4,
           }]
         : []),
-      // 4. Tangent line at current spend
+      // 4. Tangent line at current spend — also needs type:'line'
       ...(tangentPoints.length === 2
         ? [{
-            label: `Marginal iROAS (slope = ${marginaliROAS?.toFixed(2)})`,
+            type: 'line' as const,
+            label: `Marginal iROAS slope = ${marginaliROAS?.toFixed(2)}`,
             data: tangentPoints,
-            showLine: true,
-            borderColor: `${AMBER}cc`,
+            borderColor: AMBER,
             backgroundColor: 'transparent',
             borderWidth: 2,
             borderDash: [5, 4],

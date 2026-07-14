@@ -352,7 +352,7 @@ export function RecommendationPanel({
                         </span>
                         <p className="text-[11px] text-muted mt-0.5">
                           {row.regressionMethod === 'power-curve'
-                            ? `curve · ${row.regressionPeriods}p`
+                            ? `curve · ${row.regressionPeriods}p${row.regressionRSquared !== null ? ` · R² ${row.regressionRSquared.toFixed(2)}` : ''}`
                             : row.regressionMethod === 'rolling-avg'
                               ? `rolling · ${row.regressionPeriods}p`
                               : row.historicalPeriods > 0
@@ -452,6 +452,9 @@ export function RecommendationPanel({
                                 {row.regressionMethod === 'power-curve' && (
                                   <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-maintain-bg text-maintain border border-maintain/30 normal-case tracking-normal">
                                     power-curve · {row.regressionPeriods} periods
+                                    {row.regressionRSquared !== null && (
+                                      <> · R&sup2; {row.regressionRSquared.toFixed(2)}</>
+                                    )}
                                   </span>
                                 )}
                                 {row.regressionMethod === 'rolling-avg' && (
