@@ -55,6 +55,7 @@ export type ConsolidatedRow = {
   rolling28iROAS: number | null      // iROAS over the trailing 4 periods (approx 28 days)
   regressionMethod: 'power-curve' | 'rolling-avg' | 'none'
   regressionPeriods: number          // how many periods were used in the regression
+  regressionRSquared: number | null  // R² of the power-curve fit (0–1)
   regressionCoeffs: { a: number; b: number } | null  // power-curve params: revenue = a * spend^b
   // raw spend/revenue pairs for the chart — includes all historical + current period
   chartPoints: { spend: number; revenue: number; period: string; isCurrent: boolean }[]
@@ -668,6 +669,7 @@ export function consolidateRows(
       rolling28iROAS: regression.rolling28,
       regressionMethod: regression.method,
       regressionPeriods: regression.periodsUsed,
+      regressionRSquared: regression.rSquared,
       regressionCoeffs:
         regression.method === 'power-curve' &&
         regression.elasticity !== null &&

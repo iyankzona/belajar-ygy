@@ -10,7 +10,7 @@ import {
   type ChartOptions,
   type ChartData,
 } from 'chart.js'
-import { Scatter } from 'react-chartjs-2'
+import { Chart } from 'react-chartjs-2'
 import { MIN_REGRESSION_PERIODS } from '@/lib/roas'
 
 ChartJS.register(LinearScale, PointElement, LineElement, Tooltip, Legend)
@@ -79,7 +79,7 @@ export function PowerCurveChart({ chartPoints, regressionCoeffs, marginaliROAS, 
   const AMBER  = '#f59e0b'
   const GREEN  = '#22c55e'
 
-  const data: ChartData<'scatter'> = {
+  const data: ChartData<'scatter' | 'line'> = {
     datasets: [
       // 1. Historical scatter points
       {
@@ -137,7 +137,7 @@ export function PowerCurveChart({ chartPoints, regressionCoeffs, marginaliROAS, 
     ],
   }
 
-  const options: ChartOptions<'scatter'> = {
+  const options: ChartOptions<'scatter' | 'line'> = {
     responsive: true,
     maintainAspectRatio: false,
     animation: { duration: 0 },
@@ -218,7 +218,7 @@ export function PowerCurveChart({ chartPoints, regressionCoeffs, marginaliROAS, 
         </p>
       )}
       <div style={{ height: 270 }}>
-        <Scatter data={data} options={options} />
+        <Chart type="scatter" data={data} options={options} />
       </div>
     </div>
   )
