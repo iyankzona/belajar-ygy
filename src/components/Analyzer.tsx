@@ -190,10 +190,8 @@ function ChartCard({ title, children }: { title: string; children: React.ReactEl
 export function Analyzer() {
   const [view, setView] = useState<ViewMode>('weekly')
   const [weeklyRows, setWeeklyRows] = useState<RawRow[]>([])
-  const [monthlyRows, setMonthlyRows] = useState<RawRow[]>([])
   const [weeklyFileName, setWeeklyFileName] = useState<string | null>(null)
-  const [monthlyFileName, setMonthlyFileName] = useState<string | null>(null)
-  const [errors, setErrors] = useState<Record<ViewMode, string>>({ weekly: '', biweekly: '', monthly: '' })
+  const [errors, setErrors] = useState<{ weekly: string }>({ weekly: '' })
   const [targetIncrementalRoas, setTargetIncrementalRoas] = useState(5)
   const [minimumSpend, setMinimumSpend] = useState(0)
   const [reallocationPercentage, setReallocationPercentage] = useState(15)
@@ -204,17 +202,13 @@ export function Analyzer() {
   const [decisionCadence, setDecisionCadence] = useState<DecisionCadence>('monthly')
   const [lastActionDates, setLastActionDates] = useState<CampaignActionsStore>(() => loadActions())
 
-  // Biweekly and monthly rows are derived from weekly data — aggregated on the fly.
-  // If a separate monthly CSV is loaded we use that; otherwise we aggregate from weekly
-  // so the monthly view is always consistent with the weekly source of truth.
+  // Biweekly and monthly rows are always derived from weekly data — single source of truth.
   const biweeklyRows = useMemo(() => aggregateBiweekly(weeklyRows), [weeklyRows])
   const monthlyRowsDerived = useMemo(() => aggregateMonthly(weeklyRows), [weeklyRows])
-  const usingUploadedMonthlyCSV = monthlyRows.length > 0
-  const effectiveMonthlyRows = usingUploadedMonthlyCSV ? monthlyRows : monthlyRowsDerived
 
-  const sourceRows = view === 'weekly' ? weeklyRows : view === 'biweekly' ? biweeklyRows : effectiveMonthlyRows
+  const sourceRows = view === 'weekly' ? weeklyRows : view === 'biweekly' ? biweeklyRows : monthlyRowsDerived
   const hasData = sourceRows.length > 0
-  const hasAnyData = weeklyRows.length > 0 || monthlyRows.length > 0
+  const hasAnyData = weeklyRows.length > 0
 
   const availablePeriods = useMemo(
     () => getAvailablePeriods(sourceRows, view),
@@ -294,18 +288,17 @@ export function Analyzer() {
     value: metrics.counts[cat],
   }))
 
-  const upload = (mode: ViewMode) => async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const uploadWeekly = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
     try {
-      const rows = loadRows(await file.text(), mode)
-      if (mode === 'weekly') { setWeeklyRows(rows); setWeeklyFileName(file.name) }
-      else { setMonthlyRows(rows); setMonthlyFileName(file.name) }
-      setErrors((cur) => ({ ...cur, [mode]: '' }))
+      const rows = loadRows(await file.text(), 'weekly')
+      setWeeklyRows(rows)
+      setWeeklyFileName(file.name)
+      setErrors({ weekly: '' })
     } catch (err) {
-      if (mode === 'weekly') setWeeklyFileName(null)
-      else setMonthlyFileName(null)
-      setErrors((cur) => ({ ...cur, [mode]: err instanceof Error ? err.message : 'File cannot be parsed.' }))
+      setWeeklyFileName(null)
+      setErrors({ weekly: err instanceof Error ? err.message : 'File cannot be parsed.' })
     }
     e.target.value = ''
   }
@@ -340,34 +333,15 @@ export function Analyzer() {
 
         {/* ── Step 1: Upload ──────────────────────────────────────────────── */}
         <section>
-          <SectionLabel step={1} title="Upload your CSV files" />
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <SectionLabel step={1} title="Upload your Weekly CSV" />
+          <div className="max-w-sm">
             <FileUploadCard
               label="Upload Weekly CSV"
-              description="Columns: Week, Campaign, Cost, Total conv. value, ROAS"
+              description="Columns: Week, Campaign, Cost, Total conv. value, ROAS. Biweekly and monthly views are aggregated automatically."
               fileName={weeklyFileName}
               error={errors.weekly}
-              onChange={upload('weekly')}
+              onChange={uploadWeekly}
             />
-            <div className="flex flex-col gap-2">
-              <FileUploadCard
-                label="Upload Monthly CSV (optional)"
-                description="If omitted, monthly view is aggregated from weekly data"
-                fileName={monthlyFileName}
-                error={errors.monthly}
-                onChange={upload('monthly')}
-              />
-              {usingUploadedMonthlyCSV && (
-                <p className="text-[11px] text-monitor leading-relaxed px-1">
-                  Note: using separately uploaded monthly CSV — numbers may differ from the weekly-aggregated view if the two files have different attribution windows or campaign scope.
-                </p>
-              )}
-              {!usingUploadedMonthlyCSV && weeklyRows.length > 0 && (
-                <p className="text-[11px] text-muted leading-relaxed px-1">
-                  Monthly view is aggregated from your weekly data.
-                </p>
-              )}
-            </div>
           </div>
         </section>
 
