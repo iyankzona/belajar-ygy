@@ -493,7 +493,7 @@ export function RecommendationPanel({
                                     rolling-avg fallback · {row.regressionPeriods} periods
                                   </span>
                                 )}
-                                {row.curveValidation && (
+                                {row.regressionMethod === 'power-curve' && row.curveValidation && (
                                   <span className={`ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border normal-case tracking-normal ${
                                     row.curveValidation.avgAbsErrPct !== null && row.curveValidation.avgAbsErrPct <= 10
                                       ? 'bg-scale-bg text-scale border-scale/30'
@@ -501,7 +501,12 @@ export function RecommendationPanel({
                                         ? 'bg-maintain-bg text-maintain border-maintain/30'
                                         : 'bg-monitor-bg text-monitor border-monitor/30'
                                   }`}>
-                                    validation: {row.curveValidation.avgAbsErrPct !== null ? `avg ${row.curveValidation.avgAbsErrPct.toFixed(0)}% err` : 'n/a'} · {row.curveValidation.monthsChecked}mo
+                                    validation: avg {row.curveValidation.avgAbsErrPct?.toFixed(0)}% err · {row.curveValidation.monthsChecked}mo
+                                  </span>
+                                )}
+                                {row.regressionMethod === 'power-curve' && !row.curveValidation && (
+                                  <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold border bg-surface-2 text-muted border-border normal-case tracking-normal">
+                                    validation: insufficient complete months
                                   </span>
                                 )}
                                 {row.regressionMethod === 'none' && (

@@ -262,6 +262,37 @@ export function aggregateBiweekly(weeklyRows: RawRow[]): RawRow[] {
   )
 }
 
+/**
+ * Aggregates weekly RawRows into calendar-month periods.
+ * The month period label is "YYYY-MM" (e.g. "2025-06").
+ * Cost and revenue are summed for all weekly rows whose ISO start date falls
+ * within that calendar month. Uses the same ISO date extraction as the holdout
+ * validator so the two are always consistent.
+ */
+export function aggregateMonthly(weeklyRows: RawRow[]): RawRow[] {
+  if (weeklyRows.length === 0) return []
+  const ISO_DATE_RE = /(\d{4}-\d{2}-\d{2})/
+  const aggregated = new Map<string, RawRow>()
+  for (const row of weeklyRows) {
+    const match = ISO_DATE_RE.exec(row.period)
+    if (!match) continue
+    const d = new Date(match[1])
+    if (isNaN(d.getTime())) continue
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    const mapKey = `${monthKey}|||${row.campaign}`
+    const existing = aggregated.get(mapKey)
+    if (existing) {
+      existing.cost += row.cost
+      existing.revenue += row.revenue
+    } else {
+      aggregated.set(mapKey, { period: monthKey, campaign: row.campaign, cost: row.cost, revenue: row.revenue })
+    }
+  }
+  return Array.from(aggregated.values()).sort(
+    (a, b) => periodTime(a.period, 'monthly') - periodTime(b.period, 'monthly'),
+  )
+}
+
 // ─── Power-curve regression engine ──────────────────────────────────────────
 // Fits log(revenue) ~ a + b*log(spend) via OLS on the trailing N periods.
 // The derivative of the fitted curve revenue = exp(a) * spend^b at current spend
@@ -386,11 +417,16 @@ export function computeHoldoutValidation(
 ): ConsolidatedRow['curveValidation'] {
   if (weeklyRows.length === 0) return null
 
-  // Group rows into YYYY-MM buckets using the start date of the period label
+  // Group rows into YYYY-MM buckets using the start date of the period label.
+  // Period labels look like "2025-06-09 - 2025-06-15" or "2025-06-09".
+  // We extract the first full ISO date (YYYY-MM-DD) by matching it directly —
+  // do NOT split on hyphens because that would break the date components.
+  const ISO_DATE_RE = /(\d{4}-\d{2}-\d{2})/
   const byMonth = new Map<string, RawRow[]>()
   for (const row of weeklyRows) {
-    const startStr = row.period.split(/\s*[-–]\s*/)[0].trim()
-    const d = new Date(startStr)
+    const match = ISO_DATE_RE.exec(row.period)
+    if (!match) continue
+    const d = new Date(match[1])
     if (isNaN(d.getTime())) continue
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
     const arr = byMonth.get(key) ?? []

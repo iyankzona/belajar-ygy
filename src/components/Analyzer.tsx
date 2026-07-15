@@ -19,6 +19,7 @@ import {
 
 import {
   aggregateBiweekly,
+  aggregateMonthly,
   analyzeRows,
   CADENCE_DAYS,
   CATEGORY_COLORS,
@@ -203,10 +204,15 @@ export function Analyzer() {
   const [decisionCadence, setDecisionCadence] = useState<DecisionCadence>('monthly')
   const [lastActionDates, setLastActionDates] = useState<CampaignActionsStore>(() => loadActions())
 
-  // Biweekly rows are derived from weekly data — aggregated on the fly
+  // Biweekly and monthly rows are derived from weekly data — aggregated on the fly.
+  // If a separate monthly CSV is loaded we use that; otherwise we aggregate from weekly
+  // so the monthly view is always consistent with the weekly source of truth.
   const biweeklyRows = useMemo(() => aggregateBiweekly(weeklyRows), [weeklyRows])
+  const monthlyRowsDerived = useMemo(() => aggregateMonthly(weeklyRows), [weeklyRows])
+  const usingUploadedMonthlyCSV = monthlyRows.length > 0
+  const effectiveMonthlyRows = usingUploadedMonthlyCSV ? monthlyRows : monthlyRowsDerived
 
-  const sourceRows = view === 'weekly' ? weeklyRows : view === 'biweekly' ? biweeklyRows : monthlyRows
+  const sourceRows = view === 'weekly' ? weeklyRows : view === 'biweekly' ? biweeklyRows : effectiveMonthlyRows
   const hasData = sourceRows.length > 0
   const hasAnyData = weeklyRows.length > 0 || monthlyRows.length > 0
 
@@ -343,13 +349,25 @@ export function Analyzer() {
               error={errors.weekly}
               onChange={upload('weekly')}
             />
-            <FileUploadCard
-              label="Upload Monthly CSV"
-              description="Columns: Month, Campaign, Cost, Total conv. value, ROAS"
-              fileName={monthlyFileName}
-              error={errors.monthly}
-              onChange={upload('monthly')}
-            />
+            <div className="flex flex-col gap-2">
+              <FileUploadCard
+                label="Upload Monthly CSV (optional)"
+                description="If omitted, monthly view is aggregated from weekly data"
+                fileName={monthlyFileName}
+                error={errors.monthly}
+                onChange={upload('monthly')}
+              />
+              {usingUploadedMonthlyCSV && (
+                <p className="text-[11px] text-monitor leading-relaxed px-1">
+                  Note: using separately uploaded monthly CSV — numbers may differ from the weekly-aggregated view if the two files have different attribution windows or campaign scope.
+                </p>
+              )}
+              {!usingUploadedMonthlyCSV && weeklyRows.length > 0 && (
+                <p className="text-[11px] text-muted leading-relaxed px-1">
+                  Monthly view is aggregated from your weekly data.
+                </p>
+              )}
+            </div>
           </div>
         </section>
 
