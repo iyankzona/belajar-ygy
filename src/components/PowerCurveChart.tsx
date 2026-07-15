@@ -54,13 +54,25 @@ export function PowerCurveChart({
 
   // ── Fitted curve — 60 smooth points across spend range ────────────────────
   // Include currentPeriodSpend in the range so the x-axis always fits it.
+  const weeklySpends = chartPoints.map((p) => p.spend).filter((s) => s > 0)
+  const maxWeeklySpend = weeklySpends.length > 0 ? Math.max(...weeklySpends) : 0
   const allSpends = [
-    ...chartPoints.map((p) => p.spend).filter((s) => s > 0),
+    ...weeklySpends,
     ...(hasCurrentPeriod ? [currentPeriodSpend] : []),
   ]
   const minSpend = Math.min(...allSpends)
   const maxSpend = Math.max(...allSpends)
   const spendRange = maxSpend - minSpend || maxSpend * 0.2
+
+  // Extrapolation flag: current-period spend is more than 2× the largest single
+  // weekly point in the scatter — the curve is being evaluated far outside the
+  // range it was fitted on, making the marginal iROAS estimate less reliable.
+  const EXTRAPOLATION_THRESHOLD = 2
+  const isExtrapolating =
+    hasCurve &&
+    hasCurrentPeriod &&
+    maxWeeklySpend > 0 &&
+    currentPeriodSpend > maxWeeklySpend * EXTRAPOLATION_THRESHOLD
 
   const curvePoints: { x: number; y: number }[] = []
   if (hasCurve && regressionCoeffs) {
@@ -205,7 +217,8 @@ export function PowerCurveChart({
         type: 'linear',
         // Ensure the current-period marker is never clipped when it sits right of
         // all weekly scatter points (Biweekly / Monthly aggregates).
-        min: minSpend - spendRange * 0.05,
+        // Left side is clamped to 0 — spend can never be negative.
+        min: Math.max(0, minSpend - spendRange * 0.05),
         max: maxSpend + spendRange * 0.1,
         title: {
           display: true,
@@ -248,6 +261,12 @@ export function PowerCurveChart({
           {chartPoints.length < MIN_REGRESSION_PERIODS
             ? `Not enough history for curve fit — need ${MIN_REGRESSION_PERIODS} periods, have ${chartPoints.length}.`
             : 'Curve fit unavailable — showing historical points only.'}
+        </p>
+      )}
+      {/* Extrapolation warning */}
+      {isExtrapolating && (
+        <p className="text-[11px] text-monitor leading-relaxed mb-2">
+          Current period spend ({fmtIDR(currentPeriodSpend)}) is {(currentPeriodSpend / maxWeeklySpend).toFixed(1)}× the largest single weekly period in the historical scatter — the marginal iROAS estimate is an extrapolation beyond the curve&apos;s fitted range. Treat with extra caution.
         </p>
       )}
       <div style={{ height: 270 }}>
