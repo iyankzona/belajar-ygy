@@ -180,12 +180,11 @@ export function loadRows(text: string, mode: ViewMode): RawRow[] {
 export function periodTime(period: string, mode: ViewMode): number {
   if (mode === 'monthly')
     return Date.parse(period.length === 7 ? `${period}-01` : period) || 0
-  // biweekly labels look like "2025-01-06 – 2025-01-19"; parse the start date
-  if (mode === 'biweekly') {
-    const start = period.split(/\s*[–-]\s*/)[0].trim()
-    return Date.parse(start) || 0
-  }
-  return Date.parse(period.replace(/ - .*/, '')) || Date.parse(period) || 0
+  // Weekly and biweekly labels both start with a date (possibly in a range like
+  // "Dec 29, 2025 to Jan 4, 2026 (Week 1)"). extractStartDate handles every
+  // observed label format and returns the START date to sort/compare by.
+  const d = extractStartDate(period)
+  return d ? d.getTime() : 0
 }
 
 /**
@@ -230,10 +229,13 @@ export function aggregateBiweekly(weeklyRows: RawRow[]): RawRow[] {
     const w1 = allWeeks[i]
     const w2 = allWeeks[i + 1] // may be undefined for an odd trailing week
 
-    // Derive start/end dates for the label
-    const startStr = w1.split(/\s*[-–]\s*/)[0].trim()
-    const endCandidate = w2 ? w2.split(/\s*[-–]\s/).pop()?.trim() ?? w2 : w1.split(/\s*[-–]\s/).pop()?.trim() ?? w1
-    const label = `${startStr} – ${endCandidate}`
+    // Derive start/end dates for the label using the robust date extractors,
+    // so the label is a clean ISO range regardless of the source label format.
+    const startDate = extractStartDate(w1)
+    const endDate = extractEndDate(w2 ?? w1)
+    const startStr = startDate ? toIsoDate(startDate) : w1
+    const endStr = endDate ? toIsoDate(endDate) : (w2 ?? w1)
+    const label = `${startStr} – ${endStr}`
 
     weekToBiweekly.set(w1, label)
     if (w2) {
@@ -270,22 +272,65 @@ export function aggregateBiweekly(weeklyRows: RawRow[]): RawRow[] {
  * validator so the two are always consistent.
  */
 /**
- * Extracts a JS Date from a weekly period label.
- * Handles two formats produced by Google Ads CSV exports:
- *   ISO range:  "2025-06-09 - 2025-06-15"  → parse first ISO date token
- *   US locale:  "Jun 9, 2025"              → parse directly with Date.parse
+ * Extracts the START date from a weekly period label.
+ * Google Ads / Looker Studio exports use a range label whose START is what we
+ * bucket months by. Observed real-world formats:
+ *   "Dec 29, 2025 to Jan 4, 2026 (Week 1)"   ← range with " to " and a (Week N) suffix
+ *   "2025-06-09 - 2025-06-15"                ← ISO range
+ *   "2025-06-09"                             ← single ISO date
+ *   "Jun 9, 2025"                            ← single US-locale date
+ *   "09/06/2025"                             ← numeric date
+ *
+ * Strategy: strip any trailing "(Week N)" annotation, take the substring before
+ * the first range separator (" to ", " - ", " – "), then parse. We try an ISO
+ * match first (locale-independent), then fall back to Date.parse.
  */
 function extractStartDate(period: string): Date | null {
-  // Try ISO date first (YYYY-MM-DD anywhere in the string)
-  const isoMatch = /(\d{4}-\d{2}-\d{2})/.exec(period)
+  if (!period) return null
+
+  // 1. Remove a trailing "(Week N)" / "(Wk 3)" style annotation.
+  let cleaned = period.replace(/\(.*?\)\s*$/g, '').trim()
+
+  // 2. Take only the start side of a range. Handles " to ", " - ", " – " (en dash).
+  cleaned = cleaned.split(/\s+to\s+|\s+[-–]\s+/i)[0].trim()
+
+  // 3. Prefer a full ISO date if present (locale-independent).
+  const isoMatch = /(\d{4}-\d{2}-\d{2})/.exec(cleaned)
   if (isoMatch) {
     const d = new Date(isoMatch[1])
-    return isNaN(d.getTime()) ? null : d
+    if (!isNaN(d.getTime())) return d
   }
-  // Fall back to direct parse (handles "Jun 9, 2025", "June 9, 2025", "09/06/2025", etc.)
-  const ts = Date.parse(period.split(/\s*[-–]\s*/)[0].trim())
+
+  // 4. Fall back to native parsing (handles "Dec 29, 2025", "Jun 9, 2025", etc.)
+  const ts = Date.parse(cleaned)
   if (!isNaN(ts)) return new Date(ts)
+
   return null
+}
+
+/**
+ * Extracts the END date from a weekly period range label.
+ * For "Dec 29, 2025 to Jan 4, 2026 (Week 1)" → Jan 4, 2026.
+ * If the label is a single date (no range), returns the start date.
+ */
+function extractEndDate(period: string): Date | null {
+  if (!period) return null
+  const cleaned = period.replace(/\(.*?\)\s*$/g, '').trim()
+  const parts = cleaned.split(/\s+to\s+|\s+[-–]\s+/i)
+  const endStr = (parts.length > 1 ? parts[parts.length - 1] : parts[0]).trim()
+  const isoMatch = /(\d{4}-\d{2}-\d{2})/.exec(endStr)
+  if (isoMatch) {
+    const d = new Date(isoMatch[1])
+    if (!isNaN(d.getTime())) return d
+  }
+  const ts = Date.parse(endStr)
+  if (!isNaN(ts)) return new Date(ts)
+  return extractStartDate(period)
+}
+
+/** Formats a Date as an ISO YYYY-MM-DD string. */
+function toIsoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 export function aggregateMonthly(weeklyRows: RawRow[]): RawRow[] {
