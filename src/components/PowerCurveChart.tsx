@@ -30,16 +30,34 @@ type Props = {
   regressionCoeffs: { a: number; b: number } | null
   marginaliROAS: number | null
   regressionMethod: 'power-curve' | 'rolling-avg' | 'none'
+  // The current cadence-period's aggregated spend and revenue.
+  // For Weekly this matches the most-recent chartPoint; for Biweekly/Monthly
+  // it is an aggregate that may sit further right than any individual weekly dot.
+  currentPeriodSpend: number
+  currentPeriodRevenue: number
 }
 
-export function PowerCurveChart({ chartPoints, regressionCoeffs, marginaliROAS, regressionMethod }: Props) {
+export function PowerCurveChart({
+  chartPoints,
+  regressionCoeffs,
+  marginaliROAS,
+  regressionMethod,
+  currentPeriodSpend,
+  currentPeriodRevenue,
+}: Props) {
   const hasCurve = regressionMethod === 'power-curve' && regressionCoeffs !== null && chartPoints.length >= MIN_REGRESSION_PERIODS
 
-  const historicalPoints = chartPoints.filter((p) => !p.isCurrent)
-  const currentPoint = chartPoints.find((p) => p.isCurrent)
+  // All chartPoints are weekly historical scatter — none carry isCurrent for Biweekly/Monthly,
+  // so we never rely on the isCurrent flag for the current-period marker.
+  // Instead we use the explicitly-passed currentPeriodSpend/Revenue.
+  const hasCurrentPeriod = currentPeriodSpend > 0
 
   // ── Fitted curve — 60 smooth points across spend range ────────────────────
-  const allSpends = chartPoints.map((p) => p.spend).filter((s) => s > 0)
+  // Include currentPeriodSpend in the range so the x-axis always fits it.
+  const allSpends = [
+    ...chartPoints.map((p) => p.spend).filter((s) => s > 0),
+    ...(hasCurrentPeriod ? [currentPeriodSpend] : []),
+  ]
   const minSpend = Math.min(...allSpends)
   const maxSpend = Math.max(...allSpends)
   const spendRange = maxSpend - minSpend || maxSpend * 0.2
@@ -48,17 +66,26 @@ export function PowerCurveChart({ chartPoints, regressionCoeffs, marginaliROAS, 
   if (hasCurve && regressionCoeffs) {
     const { a, b } = regressionCoeffs
     const steps = 60
+    // Extend the curve slightly past the rightmost point so the current marker
+    // (which may be an aggregate and sit to the right of any weekly dot) is
+    // never clipped by the curve ending too early.
+    const curveMax = maxSpend + spendRange * 0.05
+    const curveMin = minSpend
+    const curveRange = curveMax - curveMin
     for (let i = 0; i <= steps; i++) {
-      const s = minSpend + (spendRange * i) / steps
+      const s = curveMin + (curveRange * i) / steps
       curvePoints.push({ x: s, y: a * Math.pow(s, b) })
     }
   }
 
-  // ── Tangent line segment around current spend ─────────────────────────────
+  // ── Tangent line segment anchored at the current cadence-period point ──────
+  // Slope = marginaliROAS (already evaluated at currentPeriodSpend by evaluateCurveAtSpend).
+  // We anchor the tangent at (currentPeriodSpend, currentPeriodRevenue) — actual observed
+  // revenue — not the curve's prediction, so the marker shows real data.
   const tangentPoints: { x: number; y: number }[] = []
-  if (hasCurve && currentPoint && marginaliROAS !== null) {
-    const cx = currentPoint.spend
-    const cy = currentPoint.revenue
+  if (hasCurve && hasCurrentPeriod && marginaliROAS !== null) {
+    const cx = currentPeriodSpend
+    const cy = currentPeriodRevenue
     const halfWidth = spendRange * 0.15   // short segment: ±15% of spend range
     tangentPoints.push({ x: cx - halfWidth, y: cy - marginaliROAS * halfWidth })
     tangentPoints.push({ x: cx + halfWidth, y: cy + marginaliROAS * halfWidth })
@@ -81,10 +108,10 @@ export function PowerCurveChart({ chartPoints, regressionCoeffs, marginaliROAS, 
 
   const data: ChartData<'scatter' | 'line'> = {
     datasets: [
-      // 1. Historical scatter points
+      // 1. Historical weekly scatter points (all chartPoints — weekly grain regardless of view)
       {
-        label: 'Historical periods',
-        data: historicalPoints.map((p) => ({ x: p.spend, y: p.revenue })),
+        label: 'Historical (weekly)',
+        data: chartPoints.map((p) => ({ x: p.spend, y: p.revenue })),
         backgroundColor: `${BLUE}99`,
         borderColor: BLUE,
         pointRadius: 5,
@@ -92,11 +119,13 @@ export function PowerCurveChart({ chartPoints, regressionCoeffs, marginaliROAS, 
         showLine: false,
         order: 3,
       },
-      // 2. Current period (highlighted)
-      ...(currentPoint
+      // 2. Current cadence-period marker — uses aggregated spend/revenue for the current
+      //    period (single week for Weekly; 2-week sum for Biweekly; monthly sum for Monthly).
+      //    This is always plotted from the explicit props, never from isCurrent flags.
+      ...(hasCurrentPeriod
         ? [{
             label: 'Current period',
-            data: [{ x: currentPoint.spend, y: currentPoint.revenue }],
+            data: [{ x: currentPeriodSpend, y: currentPeriodRevenue }],
             backgroundColor: `${AMBER}cc`,
             borderColor: AMBER,
             pointRadius: 8,
@@ -174,6 +203,10 @@ export function PowerCurveChart({ chartPoints, regressionCoeffs, marginaliROAS, 
     scales: {
       x: {
         type: 'linear',
+        // Ensure the current-period marker is never clipped when it sits right of
+        // all weekly scatter points (Biweekly / Monthly aggregates).
+        min: minSpend - spendRange * 0.05,
+        max: maxSpend + spendRange * 0.1,
         title: {
           display: true,
           text: 'Spend',

@@ -572,6 +572,8 @@ export function RecommendationPanel({
                                 regressionCoeffs={row.regressionCoeffs}
                                 marginaliROAS={row.marginaliROAS}
                                 regressionMethod={row.regressionMethod}
+                                currentPeriodSpend={row.latestSpend}
+                                currentPeriodRevenue={row.latestRevenue}
                               />
                             </div>
 
