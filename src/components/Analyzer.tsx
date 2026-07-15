@@ -483,12 +483,12 @@ export function Analyzer() {
               </svg>
               <div>
                 <p className="font-semibold text-text">
-                  {view === 'biweekly' ? 'No biweekly data available' : `No ${view} data uploaded yet`}
+                  {view === 'weekly' ? 'No weekly data uploaded yet' : `No ${view} data available`}
                 </p>
                 <p className="text-sm text-muted mt-1">
-                  {view === 'biweekly'
-                    ? 'Upload a weekly CSV file — biweekly periods are aggregated automatically from your weekly data.'
-                    : <>Upload a <strong>{view}</strong> CSV file above to see your analysis.</>
+                  {view === 'weekly'
+                    ? 'Upload a weekly CSV file above to see your analysis.'
+                    : `Upload your weekly CSV above — ${view} periods are aggregated automatically from your weekly data.`
                   }
                 </p>
               </div>
