@@ -269,15 +269,31 @@ export function aggregateBiweekly(weeklyRows: RawRow[]): RawRow[] {
  * within that calendar month. Uses the same ISO date extraction as the holdout
  * validator so the two are always consistent.
  */
+/**
+ * Extracts a JS Date from a weekly period label.
+ * Handles two formats produced by Google Ads CSV exports:
+ *   ISO range:  "2025-06-09 - 2025-06-15"  → parse first ISO date token
+ *   US locale:  "Jun 9, 2025"              → parse directly with Date.parse
+ */
+function extractStartDate(period: string): Date | null {
+  // Try ISO date first (YYYY-MM-DD anywhere in the string)
+  const isoMatch = /(\d{4}-\d{2}-\d{2})/.exec(period)
+  if (isoMatch) {
+    const d = new Date(isoMatch[1])
+    return isNaN(d.getTime()) ? null : d
+  }
+  // Fall back to direct parse (handles "Jun 9, 2025", "June 9, 2025", "09/06/2025", etc.)
+  const ts = Date.parse(period.split(/\s*[-–]\s*/)[0].trim())
+  if (!isNaN(ts)) return new Date(ts)
+  return null
+}
+
 export function aggregateMonthly(weeklyRows: RawRow[]): RawRow[] {
   if (weeklyRows.length === 0) return []
-  const ISO_DATE_RE = /(\d{4}-\d{2}-\d{2})/
   const aggregated = new Map<string, RawRow>()
   for (const row of weeklyRows) {
-    const match = ISO_DATE_RE.exec(row.period)
-    if (!match) continue
-    const d = new Date(match[1])
-    if (isNaN(d.getTime())) continue
+    const d = extractStartDate(row.period)
+    if (!d) continue
     const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
     const mapKey = `${monthKey}|||${row.campaign}`
     const existing = aggregated.get(mapKey)
@@ -417,17 +433,12 @@ export function computeHoldoutValidation(
 ): ConsolidatedRow['curveValidation'] {
   if (weeklyRows.length === 0) return null
 
-  // Group rows into YYYY-MM buckets using the start date of the period label.
-  // Period labels look like "2025-06-09 - 2025-06-15" or "2025-06-09".
-  // We extract the first full ISO date (YYYY-MM-DD) by matching it directly —
-  // do NOT split on hyphens because that would break the date components.
-  const ISO_DATE_RE = /(\d{4}-\d{2}-\d{2})/
+  // Group rows into YYYY-MM buckets. Uses extractStartDate so all period label
+  // formats (ISO range, US locale "Jun 9, 2025", etc.) are handled consistently.
   const byMonth = new Map<string, RawRow[]>()
   for (const row of weeklyRows) {
-    const match = ISO_DATE_RE.exec(row.period)
-    if (!match) continue
-    const d = new Date(match[1])
-    if (isNaN(d.getTime())) continue
+    const d = extractStartDate(row.period)
+    if (!d) continue
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
     const arr = byMonth.get(key) ?? []
     arr.push(row)
