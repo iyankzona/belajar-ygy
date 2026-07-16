@@ -574,6 +574,51 @@ export function RecommendationPanel({
                                 />
                               </div>
 
+                              {/* Recency-divergence warning ─────────────────────────────────────
+                                  Fires when the long-run curve estimate and the trailing recent-
+                                  window iROAS tell opposite stories, signalling a possible recent
+                                  structural change not yet captured by the fitted curve.
+                                  Suppressed for Monitor / Low-confidence rows where the action
+                                  is already withheld regardless. -------------------------------- */}
+                              {(() => {
+                                // Only meaningful for power-curve with an actionable recommendation
+                                if (
+                                  row.regressionMethod !== 'power-curve' ||
+                                  row.marginaliROAS === null ||
+                                  row.confidence === 'Low' ||
+                                  row.category === 'Monitor'
+                                ) return null
+
+                                // Prefer 14-day; fall back to 28-day
+                                const trailingLabel = row.rolling14iROAS !== null ? '14-day' : '28-day'
+                                const trailingValue = row.rolling14iROAS ?? row.rolling28iROAS
+                                if (trailingValue === null) return null
+
+                                const curve = row.marginaliROAS
+
+                                // Trigger 1: sign mismatch
+                                const signMismatch = (curve > 0 && trailingValue < 0) || (curve < 0 && trailingValue > 0)
+
+                                // Trigger 2: magnitude divergence ≥ 2× (both same sign but far apart)
+                                const magnitudeDivergence =
+                                  !signMismatch &&
+                                  Math.abs(curve) > 0 &&
+                                  Math.abs(trailingValue - curve) / Math.abs(curve) >= 2
+
+                                if (!signMismatch && !magnitudeDivergence) return null
+
+                                const reason = signMismatch
+                                  ? `sign mismatch — curve is ${curve > 0 ? 'positive' : 'negative'} but trailing is ${trailingValue > 0 ? 'positive' : 'negative'}`
+                                  : `magnitude divergence — trailing differs from curve by ${(Math.abs(trailingValue - curve) / Math.abs(curve) * 100).toFixed(0)}%`
+
+                                return (
+                                  <p className="text-[11px] text-monitor leading-relaxed mt-3 px-3 py-2 rounded border border-monitor/30 bg-monitor-bg">
+                                    <span className="font-semibold">Recency divergence ({reason}):</span>{' '}
+                                    {trailingLabel} iROAS ({formatRoas(trailingValue)}) sharply disagrees with the long-run curve estimate ({formatRoas(curve)}) — this may indicate a recent change in campaign performance not yet reflected in the fitted curve. Investigate before acting on this recommendation.
+                                  </p>
+                                )
+                              })()}
+
                               {/* Power-curve chart */}
                               <PowerCurveChart
                                 chartPoints={row.chartPoints}

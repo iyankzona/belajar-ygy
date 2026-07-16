@@ -202,7 +202,6 @@ export function PowerCurveChart({
         borderWidth: 1,
         padding: 10,
         cornerRadius: 6,
-        boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
         callbacks: {
           label(ctx) {
             const raw = ctx.raw as { x: number; y: number }
