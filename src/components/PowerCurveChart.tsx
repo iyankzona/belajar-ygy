@@ -195,12 +195,14 @@ export function PowerCurveChart({
         },
       },
       tooltip: {
-        backgroundColor: '#1c1917',
-        titleColor: colorText,
-        bodyColor: colorMuted,
-        borderColor: colorBorder,
+        backgroundColor: '#ffffff',
+        titleColor: '#111827',
+        bodyColor: '#374151',
+        borderColor: '#e5e7eb',
         borderWidth: 1,
         padding: 10,
+        cornerRadius: 6,
+        boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
         callbacks: {
           label(ctx) {
             const raw = ctx.raw as { x: number; y: number }
@@ -209,6 +211,14 @@ export function PowerCurveChart({
             return `Spend: ${fmtIDR(raw.x)}  Revenue: ${fmtIDR(raw.y)}${periodStr}`
           },
           title: () => '',
+          labelColor(ctx) {
+            return {
+              borderColor: (ctx.dataset.borderColor as string) || '#6b7280',
+              backgroundColor: (ctx.dataset.borderColor as string) || '#6b7280',
+              borderWidth: 0,
+              borderRadius: 2,
+            }
+          },
         },
       },
     },
