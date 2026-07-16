@@ -209,39 +209,37 @@ export function getAvailablePeriods(rows: RawRow[], mode: ViewMode): string[] {
 
 /**
  * Aggregates weekly RawRows into biweekly periods.
- * Consecutive weekly periods are paired (oldest-first): week 1+2, week 3+4, etc.
- * Cost and revenue are summed within each pair.
- * If there is an odd number of weeks, the last lone week forms its own period.
+ * Pairing is anchored at the MOST RECENT week and works backward:
+ *   latest+previous, third-latest+fourth-latest, etc.
+ * This ensures the "current" biweekly period always contains the latest week
+ * combined with the immediately preceding week, regardless of total week count.
+ * If there is an odd number of weeks, the oldest lone week forms its own period.
  * The biweekly period label is the ISO date range of the two constituent weeks,
  * e.g. "2025-01-06 – 2025-01-19".
  */
 export function aggregateBiweekly(weeklyRows: RawRow[]): RawRow[] {
   if (weeklyRows.length === 0) return []
 
-  // Get sorted unique weeks
+  // Get sorted unique weeks (oldest first)
   const allWeeks = Array.from(new Set(weeklyRows.map((r) => r.period))).sort(
     (a, b) => periodTime(a, 'weekly') - periodTime(b, 'weekly'),
   )
 
-  // Build week-pair → biweekly label map
+  // Pair from the END: latest+previous, then 3rd+4th latest, etc.
+  // This means the current biweekly period always contains the most recent week.
   const weekToBiweekly = new Map<string, string>()
-  for (let i = 0; i < allWeeks.length; i++) {
-    const w1 = allWeeks[i]
-    const w2 = allWeeks[i + 1] // may be undefined for an odd trailing week
+  for (let i = allWeeks.length - 1; i >= 0; i -= 2) {
+    const w2 = allWeeks[i]              // more recent week
+    const w1 = allWeeks[i - 1]         // prior week (may be undefined if odd total)
 
-    // Derive start/end dates for the label using the robust date extractors,
-    // so the label is a clean ISO range regardless of the source label format.
-    const startDate = extractStartDate(w1)
-    const endDate = extractEndDate(w2 ?? w1)
-    const startStr = startDate ? toIsoDate(startDate) : w1
-    const endStr = endDate ? toIsoDate(endDate) : (w2 ?? w1)
-    const label = `${startStr} – ${endStr}`
+    const startDate = extractStartDate(w1 ?? w2)
+    const endDate = extractEndDate(w2)
+    const startStr = startDate ? toIsoDate(startDate) : (w1 ?? w2)
+    const endStr = endDate ? toIsoDate(endDate) : w2
+    const label = w1 ? `${startStr} – ${endStr}` : endStr
 
-    weekToBiweekly.set(w1, label)
-    if (w2) {
-      weekToBiweekly.set(w2, label)
-      i++ // skip w2 in the outer loop
-    }
+    weekToBiweekly.set(w2, label)
+    if (w1) weekToBiweekly.set(w1, label)
   }
 
   // Aggregate rows by campaign + biweekly label
@@ -805,7 +803,7 @@ export function consolidateRows(
         ? latestRoas - historicalAvgRoas
         : null
 
-    // ── Single-source weekly curve fit ──────────────────────────────────────
+    // ── Single-source weekly curve fit ──────────────��───────────────────────
     // Always fit on weekly grain regardless of current view mode (weekly/biweekly/monthly).
     // R², confidence, and elasticity (b) are stable single values independent of cadence.
     const campaignWeeklyRows = (weeklyByCampaign.get(campaign) ?? [])
