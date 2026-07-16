@@ -863,6 +863,18 @@ export function consolidateRows(
           hasHistory: historicalRows.length > 0,
         })
 
+    // ── Zero-revenue guard (runs before SBEC, confidence, and cooldown) ──────
+    // A campaign with zero actual revenue this period must never receive a Scale
+    // or Reduce action, regardless of what the curve predicts.  The curve was
+    // fit on historical data where the campaign had real revenue; evaluating it
+    // at the current (possibly far lower) spend level produces a curve-derived
+    // marginal iROAS that contradicts the observed zero-revenue reality.
+    const zeroRevenue = latest.revenue === 0 && latest.cost > 0
+    if (zeroRevenue && (category === 'Scale' || category === 'Reduce' || category === 'Maintain')) {
+      category = 'Monitor'
+      reason = 'Monitor (zero revenue) — no conversions recorded this period. Check for tracking issues, campaign pauses, or attribution gaps before acting.'
+    }
+
     // ── SBEC / excluded campaigns: always Monitor, no budget action ──
     if (excluded && (category === 'Scale' || category === 'Reduce' || category === 'Maintain')) {
       category = 'Monitor'
@@ -948,7 +960,9 @@ export function consolidateRows(
       incrementalSpend,
       incrementalRevenue,
       incrementalRoas,
-      marginaliROAS: marginalROAS ?? (regressionMethod !== 'none' ? fallbackIROAS : null),
+      // Suppress the curve-derived marginalROAS when actual revenue is zero —
+      // the predicted value contradicts the observed data and would mislead.
+      marginaliROAS: zeroRevenue ? null : (marginalROAS ?? (regressionMethod !== 'none' ? fallbackIROAS : null)),
       rolling14iROAS: rolling14,
       rolling28iROAS: rolling28,
       regressionMethod,

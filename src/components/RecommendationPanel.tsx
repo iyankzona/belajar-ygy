@@ -518,20 +518,28 @@ export function RecommendationPanel({
                               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                                 <Stat
                                   label="Marginal iROAS"
-                                  value={formatRoas(row.marginaliROAS)}
+                                  value={
+                                    row.latestRevenue === 0 && row.latestSpend > 0
+                                      ? 'N/A'
+                                      : formatRoas(row.marginaliROAS)
+                                  }
                                   sub={
-                                    row.regressionMethod === 'power-curve'
-                                      ? 'from curve derivative'
-                                      : row.regressionMethod === 'rolling-avg'
-                                        ? 'rolling avg fallback'
-                                        : 'unavailable'
+                                    row.latestRevenue === 0 && row.latestSpend > 0
+                                      ? 'zero revenue this period'
+                                      : row.regressionMethod === 'power-curve'
+                                        ? 'from curve derivative'
+                                        : row.regressionMethod === 'rolling-avg'
+                                          ? 'rolling avg fallback'
+                                          : 'unavailable'
                                   }
                                   accent={
-                                    row.marginaliROAS !== null
-                                      ? row.marginaliROAS >= targetIncrementalRoas
-                                        ? 'positive'
-                                        : 'negative'
-                                      : undefined
+                                    row.latestRevenue === 0 && row.latestSpend > 0
+                                      ? undefined
+                                      : row.marginaliROAS !== null
+                                        ? row.marginaliROAS >= targetIncrementalRoas
+                                          ? 'positive'
+                                          : 'negative'
+                                        : undefined
                                   }
                                 />
                                 <Stat
