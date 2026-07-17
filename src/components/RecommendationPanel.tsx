@@ -545,7 +545,11 @@ export function RecommendationPanel({
                                 <Stat
                                   label="14-day iROAS"
                                   value={formatRoas(row.rolling14iROAS)}
-                                  sub="trailing 2 periods"
+                                  sub={
+                                    row.rolling14iROAS === null && row.rolling14iROASNullReason
+                                      ? `N/A — ${row.rolling14iROASNullReason}`
+                                      : 'trailing 2 periods'
+                                  }
                                   accent={
                                     row.rolling14iROAS !== null
                                       ? row.rolling14iROAS >= targetIncrementalRoas ? 'positive' : 'negative'
@@ -555,7 +559,11 @@ export function RecommendationPanel({
                                 <Stat
                                   label="28-day iROAS"
                                   value={formatRoas(row.rolling28iROAS)}
-                                  sub="trailing 4 periods"
+                                  sub={
+                                    row.rolling28iROAS === null && row.rolling28iROASNullReason
+                                      ? `N/A — ${row.rolling28iROASNullReason}`
+                                      : 'trailing 4 periods'
+                                  }
                                   accent={
                                     row.rolling28iROAS !== null
                                       ? row.rolling28iROAS >= targetIncrementalRoas ? 'positive' : 'negative'

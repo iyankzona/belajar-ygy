@@ -52,7 +52,9 @@ export type ConsolidatedRow = {
   // power-curve regression iROAS (marginal ROAS at current spend)
   marginaliROAS: number | null       // derivative of fitted power curve at current spend
   rolling14iROAS: number | null      // iROAS over the trailing 2 periods (approx 14 days)
+  rolling14iROASNullReason: string | null  // why rolling14iROAS is null, if applicable
   rolling28iROAS: number | null      // iROAS over the trailing 4 periods (approx 28 days)
+  rolling28iROASNullReason: string | null  // why rolling28iROAS is null, if applicable
   regressionMethod: 'power-curve' | 'rolling-avg' | 'none'
   regressionPeriods: number          // how many periods were used in the regression
   regressionRSquared: number | null  // R² of the power-curve fit (0–1)
@@ -401,14 +403,38 @@ function ols(xs: number[], ys: number[]): { slope: number; intercept: number; r2
  * windowPeriods=2 → trailing ~14 days (weekly), windowPeriods=4 → ~28 days.
  */
 function rollingDeltaIROAS(historicalRows: RawRow[], current: RawRow, windowPeriods: number): number | null {
-  if (historicalRows.length < windowPeriods) return null
-  const window = historicalRows.slice(-windowPeriods)  // most recent N prior periods
+  return rollingDeltaIROASWithReason(historicalRows, current, windowPeriods).value
+}
+
+/**
+ * Same as rollingDeltaIROAS but also returns a human-readable explanation when
+ * the result is null — so the UI can display "N/A — flat/declining spend" instead
+ * of a bare "N/A".
+ */
+function rollingDeltaIROASWithReason(
+  historicalRows: RawRow[],
+  current: RawRow,
+  windowPeriods: number,
+): { value: number | null; reason: string | null } {
+  const days = windowPeriods * 7
+  if (historicalRows.length < windowPeriods) {
+    return {
+      value: null,
+      reason: `not enough prior periods (need ${windowPeriods}, have ${historicalRows.length})`,
+    }
+  }
+  const window = historicalRows.slice(-windowPeriods)
   const baseSpend = window.reduce((s, r) => s + r.cost, 0) / window.length
   const baseRevenue = window.reduce((s, r) => s + r.revenue, 0) / window.length
   const deltaSpend = current.cost - baseSpend
   const deltaRevenue = current.revenue - baseRevenue
-  if (deltaSpend <= 0) return null
-  return deltaRevenue / deltaSpend
+  if (deltaSpend <= 0) {
+    return {
+      value: null,
+      reason: `spend flat or lower than trailing ${days}-day avg — no positive delta to measure`,
+    }
+  }
+  return { value: deltaRevenue / deltaSpend, reason: null }
 }
 
 // ─── Single-source weekly power-curve fit ────────────────────────────────────
@@ -813,8 +839,10 @@ export function consolidateRows(
     const weeklyFit = fitPowerCurve(campaignWeeklyRows)
 
     // Rolling window iROAS uses the cadence-native historicalRows (for the delta signals)
-    const rolling14 = rollingDeltaIROAS(historicalRows, latest, 2)
-    const rolling28 = rollingDeltaIROAS(historicalRows, latest, 4)
+    const rolling14Result = rollingDeltaIROASWithReason(historicalRows, latest, 2)
+    const rolling28Result = rollingDeltaIROASWithReason(historicalRows, latest, 4)
+    const rolling14 = rolling14Result.value
+    const rolling28 = rolling28Result.value
 
     // Marginal iROAS: evaluate the weekly-fitted curve at the current cadence's spend level.
     // For biweekly/monthly, `latest.cost` already holds the aggregated spend for that period.
@@ -830,9 +858,16 @@ export function consolidateRows(
       ? computeHoldoutValidation(campaignWeeklyRows, weeklyFit)
       : null
 
-    // Confidence: from the weekly fit's R² — same value for all cadences of this campaign.
+    // Confidence: start from R² / period-count, then cap downward based on
+    // holdout validation error. Validation error and R² both independently cap
+    // the tier; whichever produces the more conservative result wins.
+    //
+    // Validation error thresholds:
+    //   ≤ 15 %  → no downgrade
+    //   15–40 % → cap at Medium
+    //   > 40 %  → cap at Low (suppresses specific budget actions)
     const r2 = weeklyFit?.rSquared ?? null
-    const confidence: 'High' | 'Medium' | 'Low' =
+    const r2Confidence: 'High' | 'Medium' | 'Low' =
       weeklyFit && r2 !== null && r2 >= 0.7
         ? 'High'
         : weeklyFit && r2 !== null && r2 >= 0.4
@@ -842,6 +877,23 @@ export function consolidateRows(
             : campaignWeeklyRows.length >= MIN_REGRESSION_PERIODS
               ? 'Medium'
               : 'Low'
+
+    const validationAvgErr = curveValidation?.avgAbsErrPct ?? null
+    const validationConfidenceCap: 'High' | 'Medium' | 'Low' =
+      validationAvgErr === null
+        ? 'High'           // no validation data — don't downgrade on missing info
+        : validationAvgErr <= 15
+          ? 'High'         // excellent fit — no cap
+          : validationAvgErr <= 40
+            ? 'Medium'     // moderate error — cap at Medium
+            : 'Low'        // poor fit — cap at Low, suppresses specific budget actions
+
+    // Apply the more conservative of the two caps
+    const TIER_ORDER = { High: 2, Medium: 1, Low: 0 }
+    const confidence: 'High' | 'Medium' | 'Low' =
+      TIER_ORDER[r2Confidence] <= TIER_ORDER[validationConfidenceCap]
+        ? r2Confidence
+        : validationConfidenceCap
 
     // ── Below-threshold check (runs before categorize, before all other gates) ──
     const belowThreshold = latest.cost < minimumSpend
@@ -890,9 +942,16 @@ export function consolidateRows(
         : reallocationPercentage
 
     if (confidence === 'Low' && (category === 'Scale' || category === 'Reduce')) {
-      const r2Label = r2 !== null ? ` (R² ${r2.toFixed(2)})` : ''
       category = 'Monitor'
-      reason = `Insufficient regression reliability${r2Label} — fewer than ${MIN_REGRESSION_PERIODS} periods available. Gather more history before acting.`
+      // Build a specific reason that names the dominant cause of the Low tier.
+      // Validation error takes priority in the message when it's the deciding factor.
+      if (validationAvgErr !== null && validationAvgErr > 40) {
+        const r2Label = r2 !== null ? `, R² ${r2.toFixed(2)}` : ''
+        reason = `Low reliability — validation error ${validationAvgErr.toFixed(0)}% (${curveValidation!.monthsChecked}mo${r2Label}). The curve predicts poorly on held-out data; gather more consistent history before acting.`
+      } else {
+        const r2Label = r2 !== null ? ` (R² ${r2.toFixed(2)})` : ''
+        reason = `Insufficient regression reliability${r2Label} — fewer than ${MIN_REGRESSION_PERIODS} periods or R² too low. Gather more history before acting.`
+      }
     }
 
     // ── Cooldown: suppress Scale/Reduce if within decision-cadence window ──
@@ -964,7 +1023,9 @@ export function consolidateRows(
       // the predicted value contradicts the observed data and would mislead.
       marginaliROAS: zeroRevenue ? null : (marginalROAS ?? (regressionMethod !== 'none' ? fallbackIROAS : null)),
       rolling14iROAS: rolling14,
+      rolling14iROASNullReason: rolling14 === null ? rolling14Result.reason : null,
       rolling28iROAS: rolling28,
+      rolling28iROASNullReason: rolling28 === null ? rolling28Result.reason : null,
       regressionMethod,
       regressionPeriods: weeklyFit?.periodsUsed ?? campaignWeeklyRows.length,
       regressionRSquared: r2,
