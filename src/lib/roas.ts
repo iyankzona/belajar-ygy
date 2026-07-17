@@ -702,7 +702,7 @@ export function analyzeRows(
 // Campaigns matching these patterns are always Monitor-only — no budget action ever generated.
 const EXCLUDED_CAMPAIGN_PATTERNS = [/\bSBEC\b/i]
 
-function isCampaignExcluded(name: string): boolean {
+export function isCampaignExcluded(name: string): boolean {
   return EXCLUDED_CAMPAIGN_PATTERNS.some((re) => re.test(name))
 }
 

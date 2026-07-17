@@ -310,18 +310,28 @@ export function Analyzer() {
     ),
   )
 
-  const roasData = analyzedRows
-    .filter((r) => r.previousSpend !== null)
+  // Chart data: use consolidatedRows (one entry per campaign, current period,
+  // SBEC-excluded) and cap at top 20 by absolute spend to keep charts legible.
+  const CHART_TOP_N = 20
+
+  const roasData = consolidatedRows
+    .filter((r) => r.latestSpend > 0 && r.latestRoas !== null)
+    .sort((a, b) => b.latestSpend - a.latestSpend)
+    .slice(0, CHART_TOP_N)
     .map((r) => ({
-      name: r.campaign,
-      current: r.currentRoas ?? 0,
-      incremental: r.incrementalRoas ?? 0,
+      name: r.campaign.length > 30 ? r.campaign.slice(0, 28) + '…' : r.campaign,
+      current: r.latestRoas ?? 0,
+      incremental: r.marginaliROAS ?? 0,
     }))
 
-  const budgetChangeData = analyzedRows.map((r) => ({
-    name: r.campaign,
-    change: r.recommendedSpend - r.currentSpend,
-  }))
+  const budgetChangeData = consolidatedRows
+    .filter((r) => r.category === 'Scale' || r.category === 'Reduce')
+    .sort((a, b) => Math.abs(b.recommendedSpend - b.latestSpend) - Math.abs(a.recommendedSpend - a.latestSpend))
+    .slice(0, CHART_TOP_N)
+    .map((r) => ({
+      name: r.campaign.length > 30 ? r.campaign.slice(0, 28) + '…' : r.campaign,
+      change: r.recommendedSpend - r.latestSpend,
+    }))
 
   const categoryData = (Object.keys(metrics.counts) as Category[]).map((cat) => ({
     name: cat,
@@ -385,7 +395,7 @@ export function Analyzer() {
           </div>
         </section>
 
-        {/* ── Step 2: Configure ───────────────────────────────────────────── */}
+        {/* ── Step 2: Configure ─────────────────────────────────────────��─── */}
         <section>
           <SectionLabel step={2} title="Configure parameters" />
           <Card className="p-5">
@@ -665,7 +675,7 @@ export function Analyzer() {
               />
 
               {/* Budget summary */}
-              <BudgetSummary analyzedRows={analyzedRows} />
+              <BudgetSummary consolidatedRows={consolidatedRows} />
 
               {/* Charts 2×2 */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -684,11 +694,11 @@ export function Analyzer() {
                   </LineChart>
                 </ChartCard>
 
-                <ChartCard title="ROAS vs Incremental ROAS by Campaign">
-                  <BarChart data={roasData} layout="vertical">
+                <ChartCard title={`ROAS vs Incremental ROAS by Campaign${roasData.length < CHART_TOP_N ? '' : ` (top ${CHART_TOP_N} by spend)`}`}>
+                  <BarChart data={roasData} layout="vertical" margin={{ left: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" horizontal={false} />
                     <XAxis type="number" tick={{ fontSize: 10, fill: '#78716c' }} />
-                    <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: '#78716c' }} width={90} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: '#78716c' }} width={130} />
                     <Tooltip />
                     <Legend wrapperStyle={{ fontSize: 11 }} />
                     <Bar dataKey="current" fill="#1d4ed8" radius={[0, 4, 4, 0]} name="Current ROAS" />
@@ -704,9 +714,11 @@ export function Analyzer() {
                       dataKey="value"
                       nameKey="name"
                       outerRadius={85}
-                      label={({ name, percent }) =>
-                        percent != null ? `${name} ${(percent * 100).toFixed(0)}%` : name
-                      }
+                      label={({ name, percent }) => {
+                        // Suppress label for tiny slices (< 5%) to avoid collisions
+                        if (percent == null || percent < 0.05) return ''
+                        return `${name} ${(percent * 100).toFixed(0)}%`
+                      }}
                       labelLine={false}
                     >
                       {categoryData.map((entry) => (
@@ -717,15 +729,15 @@ export function Analyzer() {
                   </PieChart>
                 </ChartCard>
 
-                <ChartCard title="Recommended Budget Change by Campaign">
-                  <BarChart data={budgetChangeData} layout="vertical">
+                <ChartCard title={`Recommended Budget Change by Campaign${budgetChangeData.length < CHART_TOP_N ? '' : ` (top ${CHART_TOP_N} by change)`}`}>
+                  <BarChart data={budgetChangeData} layout="vertical" margin={{ left: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" horizontal={false} />
                     <XAxis
                       type="number"
                       tickFormatter={(v) => `${(Number(v) / 1e6).toFixed(1)}M`}
                       tick={{ fontSize: 10, fill: '#78716c' }}
                     />
-                    <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: '#78716c' }} width={90} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 9, fill: '#78716c' }} width={130} />
                     <Tooltip formatter={(v) => formatCurrency(Number(v))} />
                     <Bar dataKey="change" radius={[0, 4, 4, 0]} name="Budget Change">
                       {budgetChangeData.map((entry, i) => (
